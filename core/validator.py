@@ -44,4 +44,54 @@ class Validator:
                 return False
             if len(orig) > 0 and len(trans) / len(orig) > 8:
                 logger.warning(f"Translation is too long: {orig} -> {trans[:50]}...")
+
+        if self._detect_repetition(translations):
+            logger.error("Translation contains repetitive patterns")
+            return False
+
         return True
+
+    def _detect_repetition(self, translations: List[str], threshold: float = 0.5) -> bool:
+        """Phát hiện text lặp lại trong bản dịch."""
+        if len(translations) < 2:
+            return False
+
+        repeat_count = 0
+        for i, trans in enumerate(translations):
+            if not trans.strip():
+                continue
+            trans_lower = trans.lower()
+            # Kiểm tra trùng lặp với dòng khác
+            for j, other in enumerate(translations):
+                if i != j and other.strip():
+                    # Nếu 2 dòng giống nhau > 50%
+                    if self._similarity(trans_lower, other.lower()) > threshold:
+                        repeat_count += 1
+                        break
+            # Kiểm tra từ lặp trong cùng 1 dòng
+            words = trans.split()
+            if len(words) >= 4:
+                word_counts = {}
+                for w in words:
+                    w_clean = re.sub(r'[^\w]', '', w.lower())
+                    if len(w_clean) > 2:
+                        word_counts[w_clean] = word_counts.get(w_clean, 0) + 1
+                max_repeat = max(word_counts.values()) if word_counts else 0
+                if max_repeat >= len(words) * 0.4:
+                    logger.warning(f"Suspicious word repetition in: {trans[:50]}...")
+                    repeat_count += 1
+                    break
+
+        return repeat_count >= len(translations) * 0.3
+
+    def _similarity(self, s1: str, s2: str) -> float:
+        """Tính độ giống nhau giữa 2 chuỗi."""
+        if not s1 or not s2:
+            return 0.0
+        s1_set = set(s1.split())
+        s2_set = set(s2.split())
+        if not s1_set or not s2_set:
+            return 0.0
+        intersection = len(s1_set & s2_set)
+        union = len(s1_set | s2_set)
+        return intersection / union if union > 0 else 0.0

@@ -1,67 +1,48 @@
-# Window presets by language (auto-applied when selecting source language)
-# Japanese: size=6, history=12, future=4
-# Korean:   size=8, history=8, future=2
-# Chinese:  size=10, history=12, future=4
-# English:  size=10, history=10, future=3
-
-# Translation Modes:
-# - default: qwen3.5:9b (general translation)
-# - uncen: huihui_ai/qwen3-abliterated:8b-v2 (adult/explicit content)
-
 whisper:
   model_size: large-v3-turbo
   device: cuda
   compute_type: float16
-  language: ja  # ja, ko, zh, en
+  language: zh
   beam_size: 5
   vad_filter: true
   min_silence_duration_ms: 500
-
 project:
   name: my_project
-  source_lang: Japanese  # Japanese, Korean, Chinese, English
-  target_lang: Vietnamese  # Vietnamese, English, Chinese, Japanese, Korean
-  input_srt: ''  # Leave empty, select via menu
-  output_srt: ''  # Leave empty, select via menu
-
+  source_lang: Chinese
+  target_lang: Vietnamese
+  input_srt: E:/trans-video/test3-sub-translated.mp4
+  output_srt: E:/trans-video/test3-vi.srt
 window:
-  size: 6   # Auto-set based on source language
+  size: 10
   history: 12
   future: 4
-
-# Translation mode settings
 translation:
-  mode: default  # default or uncen
-
-# Model configurations
+  mode: default
 model:
-  name: qwen3.5:9b  # Legacy default, use models section below
+  name: qwen3.5:9b
   ollama_url: http://localhost:11434/api/generate
-  temperature: 0.1
-  repeat_penalty: 1.15
+  temperature: 0.05
+  repeat_penalty: 1.3
   num_ctx: 6144
   num_predict: 1024
   timeout: 180
-
 models:
   default:
     name: qwen3.5:9b
     ollama_url: http://localhost:11434/api/generate
-    temperature: 0.1
-    repeat_penalty: 1.15
+    temperature: 0.05
+    repeat_penalty: 1.3
     num_ctx: 6144
     num_predict: 1024
     timeout: 180
-  
   uncen:
     name: huihui_ai/qwen3-abliterated:8b-v2
     ollama_url: http://localhost:11434/api/generate
-    temperature: 0.1
-    repeat_penalty: 1.15
+    temperature: 0.05
+    repeat_penalty: 1.3
     num_ctx: 6144
     num_predict: 1024
     timeout: 180
-
 pipeline:
   enable_glossary: true
   max_retries: 3
@@ -71,8 +52,3 @@ pipeline:
   heartbeat_timeout: 600
   circuit_breaker_threshold: 5
   circuit_breaker_cooldown: 60
-
-# glossary:
-# - source: 형님
-#   target: đại ca
-#   context: gangster

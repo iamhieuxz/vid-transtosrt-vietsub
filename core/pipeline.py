@@ -306,26 +306,28 @@ class TranslationPipeline:
                         term_line += f" (context: {t['context_hint']})"
                     glossary_lines.append(term_line)
                 glossary = "THUẬT NGỮ BẮT BUỘC:\n" + "\n".join(glossary_lines) + "\n"
-        return f"""Bạn là dịch giả chuyên nghiệp dịch phụ đề phim từ {self.config['project']['source_lang']} sang {self.config['project']['target_lang']}.
 
-{glossary}
-CÁC DÒNG TRƯỚC (history):
+        num_lines = len([l for l in task['original_text'].split('\n') if l.strip()])
+        return f"""Bạn là dịch giả chuyên nghiệp dịch phụ đề từ {self.config['project']['source_lang']} sang {self.config['project']['target_lang']}.
+
+{glossary}CÁC DÒNG TRƯỚC (đã dịch):
 {context['history']}
 
-CÁC DÒNG HIỆN TẠI (current):
+CÁC DÒNG HIỆN TẠI (cần dịch):
 {task['original_text']}
 
-CÁC DÒNG TIẾP THEO (future):
+CÁC DÒNG TIẾP THEO:
 {context['future']}
 
-Yêu cầu:
-- Dịch chỉ các dòng trong phần "current".
-- Trả về dưới dạng JSON array: [{{"id": sub_index, "text": "bản dịch"}}, ...]
-- Giữ nguyên số lượng dòng và đúng sub_index.
-- Không thêm bất kỳ văn bản nào khác ngoài JSON.
+YÊU CẦU NGHIÊM NGẶT:
+- Dịch CHÍNH XÁC {num_lines} dòng trong phần "HIỆN TẠI"
+- MỖI dòng phải được dịch KHÁC NHAU, không lặp lại nội dung
+- KHÔNG lặp lại cùng một cụm từ hoặc câu nhiều lần
+- Trả về đúng JSON array với {num_lines} phần tử: [{{"id": sub_index, "text": "bản dịch"}}, ...]
+- KHÔNG thêm bất kỳ text nào khác, chỉ có JSON
+- Dừng ngay sau dấu ] của JSON
 
-Output (JSON):
-"""
+### STOP ###
 
     def _save_to_tm(self, project, source_lines, translations):
         src_lang = self.config['project']['source_lang']
