@@ -21,22 +21,44 @@ STATUS_ICONS = {
     'processing': '[>>]'
 }
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+LANGUAGES = {
+    'ja': {'name': 'Japanese', 'display': 'Nhat (Japanese)', 'whisper_code': 'ja'},
+    'ko': {'name': 'Korean', 'display': 'Han (Korean)', 'whisper_code': 'ko'},
+    'zh': {'name': 'Chinese', 'display': 'Trung (Chinese)', 'whisper_code': 'zh'},
+    'en': {'name': 'English', 'display': 'Anh (English)', 'whisper_code': 'en'},
+}
+
+TARGET_LANGUAGES = {
+    'vi': {'name': 'Vietnamese', 'display': 'Viet (Vietnamese)'},
+    'en': {'name': 'English', 'display': 'Anh (English)'},
+    'zh': {'name': 'Chinese', 'display': 'Trung (Chinese)'},
+    'ja': {'name': 'Japanese', 'display': 'Nhat (Japanese)'},
+    'ko': {'name': 'Korean', 'display': 'Han (Korean)'},
+}
+
+WINDOW_PRESETS = {
+    'ja': {'size': 6, 'history': 12, 'future': 4},
+    'ko': {'size': 8, 'history': 8, 'future': 2},
+    'zh': {'size': 10, 'history': 12, 'future': 4},
+    'en': {'size': 10, 'history': 10, 'future': 3},
+}
+
+
+def get_lang_code(lang_name: str) -> str:
+    """Lay ma ngon ngu tu ten."""
+    for code, info in LANGUAGES.items():
+        if info['name'].lower() == lang_name.lower():
+            return code
+    for code, info in TARGET_LANGUAGES.items():
+        if info['name'].lower() == lang_name.lower():
+            return code
+    return 'en'
 
 
 def is_video_file(filepath):
     """Kiem tra duoi file co phai video khong."""
     video_exts = ('.mp4', '.mkv', '.mov', '.avi', '.webm')
     return filepath.lower().endswith(video_exts)
-
-
-def is_srt_file(filepath):
-    """Kiem tra duoi file co phai SRT khong."""
-    return filepath.lower().endswith('.srt')
 
 
 def select_input_file_gui():
@@ -99,9 +121,21 @@ def save_config(config):
 
 def print_header():
     """In header cua chuong trinh."""
-    console.print("\n[bold cyan]" + "=" * 50 + "[/bold cyan]")
-    console.print("[bold cyan]      SUBTITLE TRANSLATOR v1.0[/bold cyan]")
-    console.print("[bold cyan]" + "=" * 50 + "[/bold cyan]\n")
+    console.print("\n[bold cyan]" + "=" * 55 + "[/bold cyan]")
+    console.print("[bold cyan]       SUBTITLE TRANSLATOR v1.1[/bold cyan]")
+    console.print("[bold cyan]" + "=" * 55 + "[/bold cyan]\n")
+
+
+def get_source_lang_key(config) -> str:
+    """Lay ma ngon ngu nguon hien tai."""
+    src = config.get('project', {}).get('source_lang', 'Japanese')
+    return get_lang_code(src)
+
+
+def get_target_lang_key(config) -> str:
+    """Lay ma ngon ngu dich hien tai."""
+    tgt = config.get('project', {}).get('target_lang', 'Vietnamese')
+    return get_lang_code(tgt)
 
 
 def print_main_menu(config):
@@ -112,13 +146,31 @@ def print_main_menu(config):
     output_path = config.get('project', {}).get('output_srt', 'Chua dat')
     project_name = config.get('project', {}).get('name', 'my_movie')
     
-    console.print(f"  [1] Chon file Input          : [yellow]{input_path}[/yellow]")
-    console.print(f"  [2] Chon file Output         : [yellow]{output_path}[/yellow]")
+    src_lang = config.get('project', {}).get('source_lang', 'Japanese')
+    tgt_lang = config.get('project', {}).get('target_lang', 'Vietnamese')
+    win = config.get('window', {})
+    win_size = win.get('size', 6)
+    
+    src_display = LANGUAGES.get(get_source_lang_key(config), {}).get('display', src_lang)
+    tgt_display = TARGET_LANGUAGES.get(get_target_lang_key(config), {}).get('display', tgt_lang)
+    
+    console.print(f"  [1] Chon file Input          : [yellow]{truncate_path(input_path)}[/yellow]")
+    console.print(f"  [2] Chon file Output         : [yellow]{truncate_path(output_path)}[/yellow]")
     console.print(f"  [3] Ten Project              : [yellow]{project_name}[/yellow]")
-    console.print(f"  [4] Chinh sua Glossary")
-    console.print(f"  [5] [green]Bat dau dich[/green]")
+    console.print(f"  [4] Chon ngon ngu            : [cyan]{src_display}[/cyan] -> [green]{tgt_display}[/green]")
+    console.print(f"  [5] Chinh sua Glossary")
+    console.print(f"  [6] [green]Bat dau dich[/green]")
     console.print(f"  [0] [red]Thoat[/red]")
     console.print()
+    
+    console.print(f"[dim]Window preset: size={win_size}, history={win.get('history', 12)}, future={win.get('future', 4)}[/dim]")
+
+
+def truncate_path(path, max_len=40):
+    """Cat ngan duong dan neu qua dai."""
+    if not path or len(path) <= max_len:
+        return path
+    return "..." + path[-(max_len-3):]
 
 
 def get_input_path_interactive(config):
@@ -191,6 +243,85 @@ def edit_project_name(config):
         save_config(config)
         console.print(f"{STATUS_ICONS['success']} [green]Da luu:[/green] {new_name}")
     console.print()
+
+
+def edit_languages(config):
+    """Chon ngon ngu va tu dong dat window."""
+    while True:
+        console.print(f"\n{STATUS_ICONS['start']} [cyan]Chon Ngon Ngu[/cyan]\n")
+        
+        current_src = config.get('project', {}).get('source_lang', 'Japanese')
+        current_tgt = config.get('project', {}).get('target_lang', 'Vietnamese')
+        src_key = get_source_lang_key(config)
+        tgt_key = get_target_lang_key(config)
+        
+        console.print("[bold]Ngon ngu nguon (Source):[/bold]")
+        for i, (code, info) in enumerate(LANGUAGES.items(), 1):
+            marker = " <=" if code == src_key else ""
+            console.print(f"  [{i}] {info['display']}{marker}")
+        console.print("  [0] Quay lai")
+        
+        console.print(f"\n[bold]Ngon ngu dich (Target):[/bold]")
+        console.print(f"  Hien tai: [green]{TARGET_LANGUAGES.get(tgt_key, {}).get('display', current_tgt)}[/green]")
+        for i, (code, info) in enumerate(TARGET_LANGUAGES.items(), 1):
+            if code != src_key:
+                marker = " <=" if code == tgt_key else ""
+                console.print(f"  [{i}] {info['display']}{marker}")
+        console.print("  [0] Quay lai")
+        
+        console.print("\n[1] Chon ngon ngu nguon")
+        console.print("[2] Chon ngon ngu dich")
+        console.print("[0] Quay lai")
+        
+        choice = input("\nLua chon: ").strip()
+        
+        if choice == '1':
+            console.print("\nChon ngon ngu nguon:")
+            for i, (code, info) in enumerate(LANGUAGES.items(), 1):
+                console.print(f"  [{i}] {info['display']}")
+            src_choice = input("Lua chon: ").strip()
+            try:
+                idx = int(src_choice) - 1
+                codes = list(LANGUAGES.keys())
+                if 0 <= idx < len(codes):
+                    code = codes[idx]
+                    config['project']['source_lang'] = LANGUAGES[code]['name']
+                    config['whisper'] = config.get('whisper', {})
+                    config['whisper']['language'] = LANGUAGES[code]['whisper_code']
+                    _apply_window_preset(config, code)
+                    save_config(config)
+                    console.print(f"{STATUS_ICONS['success']} [green]Da chon:[/green] {LANGUAGES[code]['display']}")
+            except ValueError:
+                console.print(f"{STATUS_ICONS['error']} [red]Lua chon khong hop le[/red]")
+        elif choice == '2':
+            console.print("\nChon ngon ngu dich:")
+            for i, (code, info) in enumerate(TARGET_LANGUAGES.items(), 1):
+                if code != src_key:
+                    console.print(f"  [{i}] {info['display']}")
+            tgt_choice = input("Lua chon: ").strip()
+            try:
+                idx = int(tgt_choice) - 1
+                codes = [c for c in TARGET_LANGUAGES.keys() if c != src_key]
+                if 0 <= idx < len(codes):
+                    code = codes[idx]
+                    config['project']['target_lang'] = TARGET_LANGUAGES[code]['name']
+                    save_config(config)
+                    console.print(f"{STATUS_ICONS['success']} [green]Da chon:[/green] {TARGET_LANGUAGES[code]['display']}")
+            except ValueError:
+                console.print(f"{STATUS_ICONS['error']} [red]Lua chon khong hop le[/red]")
+        elif choice == '0':
+            break
+    console.print()
+
+
+def _apply_window_preset(config, lang_code: str):
+    """Ap dung window preset theo ngon ngu."""
+    preset = WINDOW_PRESETS.get(lang_code, WINDOW_PRESETS['en'])
+    config['window'] = {
+        'size': preset['size'],
+        'history': preset['history'],
+        'future': preset['future']
+    }
 
 
 def edit_glossary(config):
@@ -316,7 +447,7 @@ def run_translation(config):
         project_id = proj['id']
         console.print(f"{STATUS_ICONS['success']} [green]Project ton tai:[/green] ID={project_id}, Status={proj['status']}")
         if proj['status'] in ('completed', 'completed_with_errors'):
-            resp = input("Project da hoan thanh truoc do. Chay lai? (y/n): ").strip().lower()
+            resp = input("Project da hoan thanh truong do. Chay lai? (y/n): ").strip().lower()
             if resp not in ('y', 'yes'):
                 console.print(f"{STATUS_ICONS['warning']} [yellow]Da huy.[/yellow]")
                 return
@@ -363,8 +494,10 @@ def interactive_mode(config):
         elif choice == '3':
             edit_project_name(config)
         elif choice == '4':
-            edit_glossary(config)
+            edit_languages(config)
         elif choice == '5':
+            edit_glossary(config)
+        elif choice == '6':
             run_translation(config)
             input("\nNhan Enter de quay lai menu...")
         elif choice == '0':
@@ -379,6 +512,8 @@ def main():
     parser = argparse.ArgumentParser(description='Subtitle Translator')
     parser.add_argument('--input', '-i', help='Input file (video or SRT)')
     parser.add_argument('--output', '-o', help='Output SRT file')
+    parser.add_argument('--source-lang', '-s', help='Source language (ja, ko, zh, en)')
+    parser.add_argument('--target-lang', '-t', help='Target language (vi, en, zh, ja, ko)')
     parser.add_argument('--interactive', '-I', action='store_true', help='Interactive mode')
     parser.add_argument('--config', '-c', default='config.yaml', help='Config file path')
     
@@ -390,8 +525,22 @@ def main():
         config.setdefault('project', {})['input_srt'] = args.input
     if args.output:
         config.setdefault('project', {})['output_srt'] = args.output
+    if args.source_lang:
+        code = args.source_lang.lower()
+        if code in LANGUAGES:
+            config.setdefault('project', {})['source_lang'] = LANGUAGES[code]['name']
+            config.setdefault('whisper', {})['language'] = LANGUAGES[code]['whisper_code']
+            _apply_window_preset(config, code)
+        else:
+            console.print(f"{STATUS_ICONS['warning']} [yellow]Ngon ngu nguon khong hop le:[/yellow] {code}")
+    if args.target_lang:
+        code = args.target_lang.lower()
+        if code in TARGET_LANGUAGES:
+            config.setdefault('project', {})['target_lang'] = TARGET_LANGUAGES[code]['name']
+        else:
+            console.print(f"{STATUS_ICONS['warning']} [yellow]Ngon ngu dich khong hop le:[/yellow] {code}")
     
-    if args.input or args.output:
+    if args.input or args.output or args.source_lang or args.target_lang:
         save_config(config)
         run_translation(config)
     else:

@@ -1,21 +1,27 @@
+# Window presets by language (auto-applied when selecting source language)
+# Japanese: size=6, history=12, future=4
+# Korean:   size=8, history=8, future=2
+# Chinese:  size=10, history=12, future=4
+# English:  size=10, history=10, future=3
+
 whisper:
-  model_size: "large-v3-turbo"
-  device: "cuda"               # "cpu" nếu không có GPU
-  compute_type: "float16"      # "int8" cho CPU
-  language: ja               # null = auto-detect, hoặc "ja","ko",...
+  model_size: large-v3-turbo
+  device: cuda
+  compute_type: float16
+  language: ja  # ja, ko, zh, en
   beam_size: 5
-  vad_filter: true             # lọc khoảng lặng
+  vad_filter: true
   min_silence_duration_ms: 500
 
 project:
-  name: my_movie
-  source_lang: Japanese
-  target_lang: Vietnamese
-  input_srt: 'E:\HIDE\JAV\485\my_video.mp4'
-  output_srt: 'E:\HIDE\JAV\485\my_video-vi.srt'
+  name: my_project
+  source_lang: Japanese  # Japanese, Korean, Chinese, English
+  target_lang: Vietnamese  # Vietnamese, English, Chinese, Japanese, Korean
+  input_srt: ''  # Leave empty, select via menu
+  output_srt: ''  # Leave empty, select via menu
 
 window:
-  size: 6
+  size: 6   # Auto-set based on source language
   history: 12
   future: 4
 
@@ -30,18 +36,15 @@ model:
 
 pipeline:
   enable_glossary: true
-  max_retries: 3          # (không dùng nội bộ nữa, giữ lại để tương thích)
+  max_retries: 3
   retry_delay: 2
-  num_workers: 1           # 1 = tuần tự, >1 = song song
+  num_workers: 1
   checkpoint_interval: 20
-  heartbeat_timeout: 600   # giây
+  heartbeat_timeout: 600
   circuit_breaker_threshold: 5
   circuit_breaker_cooldown: 60
 
-glossary:                 # ví dụ, có thể bỏ
-  - source: 형님
-    target: đại ca
-    context: gangster
-  - source: 선배
-    target: tiền bối
-    context: công ty
+# glossary:
+# - source: 형님
+#   target: đại ca
+#   context: gangster
