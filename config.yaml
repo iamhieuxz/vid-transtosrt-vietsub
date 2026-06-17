@@ -1,0 +1,47 @@
+whisper:
+  model_size: "large-v3-turbo"
+  device: "cuda"               # "cpu" nếu không có GPU
+  compute_type: "float16"      # "int8" cho CPU
+  language: ja               # null = auto-detect, hoặc "ja","ko",...
+  beam_size: 5
+  vad_filter: true             # lọc khoảng lặng
+  min_silence_duration_ms: 500
+
+project:
+  name: my_movie
+  source_lang: Japanese
+  target_lang: Vietnamese
+  input_srt: 'E:\HIDE\JAV\485\my_video.mp4'
+  output_srt: 'E:\HIDE\JAV\485\my_video-vi.srt'
+
+window:
+  size: 6
+  history: 12
+  future: 4
+
+model:
+  name: huihui_ai/qwen3-abliterated:8b-v2
+  ollama_url: http://localhost:11434/api/generate
+  temperature: 0.05
+  repeat_penalty: 1.15
+  num_ctx: 6144
+  num_predict: 1024
+  timeout: 180
+
+pipeline:
+  enable_glossary: true
+  max_retries: 3          # (không dùng nội bộ nữa, giữ lại để tương thích)
+  retry_delay: 2
+  num_workers: 1           # 1 = tuần tự, >1 = song song
+  checkpoint_interval: 20
+  heartbeat_timeout: 600   # giây
+  circuit_breaker_threshold: 5
+  circuit_breaker_cooldown: 60
+
+glossary:                 # ví dụ, có thể bỏ
+  - source: 형님
+    target: đại ca
+    context: gangster
+  - source: 선배
+    target: tiền bối
+    context: công ty

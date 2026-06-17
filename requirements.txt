@@ -1,0 +1,10 @@
+# Core dependencies
+faster-whisper>=1.0.0
+pysrt>=1.1.2
+PyYAML>=6.0
+requests>=2.31.0
+json-repair>=0.30.0
+
+# UI enhancements
+rich>=13.0.0
+tqdm>=4.66.0
