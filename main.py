@@ -43,6 +43,27 @@ WINDOW_PRESETS = {
     'en': {'size': 10, 'history': 10, 'future': 3},
 }
 
+TRANSLATION_MODES = {
+    'default': {
+        'name': 'default',
+        'display': 'Mac dinh (qwen3.5)',
+        'description': 'Che do dich thong thuong',
+        'icon': '[STD]'
+    },
+    'uncen': {
+        'name': 'uncen',
+        'display': 'Uncen (qwen3-abliterated)',
+        'description': 'Ho tro noi dung nguoi lon, kieuu dam',
+        'icon': '[+18]'
+    }
+}
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 
 def get_lang_code(lang_name: str) -> str:
     """Lay ma ngon ngu tu ten."""
@@ -53,6 +74,14 @@ def get_lang_code(lang_name: str) -> str:
         if info['name'].lower() == lang_name.lower():
             return code
     return 'en'
+
+
+def get_mode_code(mode_name: str) -> str:
+    """Lay ma che do dich tu ten."""
+    for code, info in TRANSLATION_MODES.items():
+        if info['name'].lower() == mode_name.lower():
+            return code
+    return 'default'
 
 
 def is_video_file(filepath):
@@ -121,9 +150,9 @@ def save_config(config):
 
 def print_header():
     """In header cua chuong trinh."""
-    console.print("\n[bold cyan]" + "=" * 55 + "[/bold cyan]")
-    console.print("[bold cyan]       SUBTITLE TRANSLATOR v1.1[/bold cyan]")
-    console.print("[bold cyan]" + "=" * 55 + "[/bold cyan]\n")
+    console.print("\n[bold cyan]" + "=" * 58 + "[/bold cyan]")
+    console.print("[bold cyan]        SUBTITLE TRANSLATOR v1.2[/bold cyan]")
+    console.print("[bold cyan]" + "=" * 58 + "[/bold cyan]\n")
 
 
 def get_source_lang_key(config) -> str:
@@ -136,6 +165,12 @@ def get_target_lang_key(config) -> str:
     """Lay ma ngon ngu dich hien tai."""
     tgt = config.get('project', {}).get('target_lang', 'Vietnamese')
     return get_lang_code(tgt)
+
+
+def get_mode_key(config) -> str:
+    """Lay ma che do dich hien tai."""
+    mode = config.get('translation', {}).get('mode', 'default')
+    return mode
 
 
 def print_main_menu(config):
@@ -154,12 +189,17 @@ def print_main_menu(config):
     src_display = LANGUAGES.get(get_source_lang_key(config), {}).get('display', src_lang)
     tgt_display = TARGET_LANGUAGES.get(get_target_lang_key(config), {}).get('display', tgt_lang)
     
+    mode_key = get_mode_key(config)
+    mode_info = TRANSLATION_MODES.get(mode_key, TRANSLATION_MODES['default'])
+    mode_display = f"{mode_info['icon']} {mode_info['display']}"
+    
     console.print(f"  [1] Chon file Input          : [yellow]{truncate_path(input_path)}[/yellow]")
     console.print(f"  [2] Chon file Output         : [yellow]{truncate_path(output_path)}[/yellow]")
     console.print(f"  [3] Ten Project              : [yellow]{project_name}[/yellow]")
-    console.print(f"  [4] Chon ngon ngu            : [cyan]{src_display}[/cyan] -> [green]{tgt_display}[/green]")
-    console.print(f"  [5] Chinh sua Glossary")
-    console.print(f"  [6] [green]Bat dau dich[/green]")
+    console.print(f"  [4] Chon ngon ngu           : [cyan]{src_display}[/cyan] -> [green]{tgt_display}[/green]")
+    console.print(f"  [5] Che do dich             : {mode_display}")
+    console.print(f"  [6] Chinh sua Glossary")
+    console.print(f"  [7] [green]Bat dau dich[/green]")
     console.print(f"  [0] [red]Thoat[/red]")
     console.print()
     
@@ -314,6 +354,33 @@ def edit_languages(config):
     console.print()
 
 
+def edit_translation_mode(config):
+    """Chon che do dich (default/uncen)."""
+    console.print(f"\n{STATUS_ICONS['start']} [cyan]Chon Che Do Dich[/cyan]\n")
+    
+    current_mode = get_mode_key(config)
+    
+    for i, (code, info) in enumerate(TRANSLATION_MODES.items(), 1):
+        marker = " <=" if code == current_mode else ""
+        console.print(f"  [{i}] {info['icon']} {info['display']}")
+        console.print(f"      {info['description']}{marker}")
+    
+    console.print("\n[dim]Luu y: Che do Uncen ho tro dich cac noi dung nguoi lon, kieuu dam.[/dim]")
+    
+    choice = input("\nLua chon: ").strip()
+    try:
+        idx = int(choice) - 1
+        codes = list(TRANSLATION_MODES.keys())
+        if 0 <= idx < len(codes):
+            code = codes[idx]
+            config.setdefault('translation', {})['mode'] = code
+            save_config(config)
+            console.print(f"{STATUS_ICONS['success']} [green]Da chon:[/green] {TRANSLATION_MODES[code]['display']}")
+    except ValueError:
+        console.print(f"{STATUS_ICONS['error']} [red]Lua chon khong hop le[/red]")
+    console.print()
+
+
 def _apply_window_preset(config, lang_code: str):
     """Ap dung window preset theo ngon ngu."""
     preset = WINDOW_PRESETS.get(lang_code, WINDOW_PRESETS['en'])
@@ -407,6 +474,34 @@ def validate_config(config):
     return errors
 
 
+def get_active_model_config(config):
+    """Lay cau hinh model dang su dung dua tren che do dich."""
+    mode = get_mode_key(config)
+    
+    if mode == 'uncen':
+        uncen_cfg = config.get('models', {}).get('uncen', {})
+        return {
+            'name': uncen_cfg.get('name', 'huihui_ai/qwen3-abliterated:8b-v2'),
+            'ollama_url': uncen_cfg.get('ollama_url', config.get('model', {}).get('ollama_url', 'http://localhost:11434/api/generate')),
+            'temperature': uncen_cfg.get('temperature', config.get('model', {}).get('temperature', 0.05)),
+            'repeat_penalty': uncen_cfg.get('repeat_penalty', config.get('model', {}).get('repeat_penalty', 1.15)),
+            'num_ctx': uncen_cfg.get('num_ctx', config.get('model', {}).get('num_ctx', 6144)),
+            'num_predict': uncen_cfg.get('num_predict', config.get('model', {}).get('num_predict', 1024)),
+            'timeout': uncen_cfg.get('timeout', config.get('model', {}).get('timeout', 180)),
+        }
+    else:
+        default_cfg = config.get('models', {}).get('default', {})
+        return {
+            'name': default_cfg.get('name', 'qwen3.5:9b'),
+            'ollama_url': default_cfg.get('ollama_url', config.get('model', {}).get('ollama_url', 'http://localhost:11434/api/generate')),
+            'temperature': default_cfg.get('temperature', config.get('model', {}).get('temperature', 0.05)),
+            'repeat_penalty': default_cfg.get('repeat_penalty', config.get('model', {}).get('repeat_penalty', 1.15)),
+            'num_ctx': default_cfg.get('num_ctx', config.get('model', {}).get('num_ctx', 6144)),
+            'num_predict': default_cfg.get('num_predict', config.get('model', {}).get('num_predict', 1024)),
+            'timeout': default_cfg.get('timeout', config.get('model', {}).get('timeout', 180)),
+        }
+
+
 def run_translation(config):
     """Chay qua trinh dich."""
     errors = validate_config(config)
@@ -415,6 +510,13 @@ def run_translation(config):
         for err in errors:
             console.print(f"  - {err}")
         return
+    
+    mode = get_mode_key(config)
+    mode_info = TRANSLATION_MODES.get(mode, TRANSLATION_MODES['default'])
+    model_cfg = get_active_model_config(config)
+    
+    console.print(f"\n{STATUS_ICONS['start']} [cyan]Che do dich:[/cyan] {mode_info['display']}")
+    console.print(f"{STATUS_ICONS['start']} [cyan]Model:[/cyan] {model_cfg['name']}")
     
     db = Database()
     project_name = config['project']['name']
@@ -474,6 +576,8 @@ def run_translation(config):
                     term.get('context', '')
                 )
     
+    config['model'] = model_cfg
+    
     console.print(f"\n{STATUS_ICONS['start']} [cyan]Bat dau dich...[/cyan]\n")
     pipeline = TranslationPipeline(config)
     pipeline.run(project_id)
@@ -496,8 +600,10 @@ def interactive_mode(config):
         elif choice == '4':
             edit_languages(config)
         elif choice == '5':
-            edit_glossary(config)
+            edit_translation_mode(config)
         elif choice == '6':
+            edit_glossary(config)
+        elif choice == '7':
             run_translation(config)
             input("\nNhan Enter de quay lai menu...")
         elif choice == '0':
@@ -514,6 +620,7 @@ def main():
     parser.add_argument('--output', '-o', help='Output SRT file')
     parser.add_argument('--source-lang', '-s', help='Source language (ja, ko, zh, en)')
     parser.add_argument('--target-lang', '-t', help='Target language (vi, en, zh, ja, ko)')
+    parser.add_argument('--mode', '-m', help='Translation mode (default, uncen)')
     parser.add_argument('--interactive', '-I', action='store_true', help='Interactive mode')
     parser.add_argument('--config', '-c', default='config.yaml', help='Config file path')
     
@@ -539,8 +646,12 @@ def main():
             config.setdefault('project', {})['target_lang'] = TARGET_LANGUAGES[code]['name']
         else:
             console.print(f"{STATUS_ICONS['warning']} [yellow]Ngon ngu dich khong hop le:[/yellow] {code}")
+    if args.mode:
+        code = get_mode_code(args.mode)
+        config.setdefault('translation', {})['mode'] = code
+        console.print(f"{STATUS_ICONS['success']} [green]Che do dich:[/green] {TRANSLATION_MODES[code]['display']}")
     
-    if args.input or args.output or args.source_lang or args.target_lang:
+    if args.input or args.output or args.source_lang or args.target_lang or args.mode:
         save_config(config)
         run_translation(config)
     else:

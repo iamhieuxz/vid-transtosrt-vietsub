@@ -17,13 +17,28 @@
 - **Parallel Processing**: Optional multi-worker support
 - **Interactive CLI**: User-friendly interface with file picker
 - **Progress Bars**: Real-time progress visualization
+- **Multi-Language Support**: Japanese, Korean, Chinese, English
+- **Dual Translation Modes**: Default and Uncen (adult content) modes
 
 ## Screenshots
 
 ```
 ==============================
-      SUBTITLE TRANSLATOR v1.0
+     SUBTITLE TRANSLATOR v1.2
 ==============================
+
+Menu chinh:
+
+  [1] Chon file Input          : video.mp4
+  [2] Chon file Output         : output.srt
+  [3] Ten Project              : my_project
+  [4] Chon ngon ngu           : Nhat (Japanese) -> Viet (Vietnamese)
+  [5] Che do dich             : [STD] Mac dinh (qwen3.5)
+  [6] Chinh sua Glossary
+  [7] Bat dau dich
+  [0] Thoat
+
+Window preset: size=6, history=12, future=4
 
 [*] Starting pipeline for project: my_movie
 
@@ -69,8 +84,9 @@ source .venv/bin/activate  # Linux/Mac
 # Install dependencies
 pip install -r requirements.txt
 
-# Install Ollama and pull a model
-ollama pull huihui_ai/qwen3-abliterated:8b-v2
+# Pull required Ollama models
+ollama pull huihui_ai/qwen3-abliterated:8b-v2  # For Uncen mode
+ollama pull qwen3.5:9b                          # For Default mode
 ```
 
 ## Usage
@@ -84,74 +100,78 @@ python main.py
 This opens an interactive menu where you can:
 - Select input/output files via GUI file picker or manual input
 - Edit project name
+- Select source and target languages
+- Choose translation mode (default/uncen)
 - Manage glossary terms
 - Start translation
 
 ### Command Line Mode
 
 ```bash
-# With file paths
+# With file paths and defaults
 python main.py --input "video.mp4" --output "output.srt"
 
-# Using short flags
-python main.py -i "video.mp4" -o "output.srt"
+# With language selection (auto-applies window preset)
+python main.py -i "video.mp4" -o "output.srt" -s ja -t vi
+
+# With translation mode (default or uncen)
+python main.py -i "video.mp4" -o "output.srt" -m uncen
 
 # Force interactive mode
 python main.py --interactive
 ```
+
+### Translation Modes
+
+| Mode | Model | Use Case |
+|------|-------|----------|
+| `[STD]` Default | qwen3.5:9b | General translation |
+| `[+18]` Uncen | huihui_ai/qwen3-abliterated:8b-v2 | Adult/explicit content |
 
 ## Configuration
 
 Edit `config.yaml`:
 
 ```yaml
-whisper:
-  model_size: "large-v3-turbo"     # whisper model size
-  device: "cuda"                    # or "cpu"
-  compute_type: "float16"           # or "int8" for CPU
-  language: ja                      # null = auto-detect
-  beam_size: 5
-  vad_filter: true
-  min_silence_duration_ms: 500
+# Translation mode settings
+translation:
+  mode: default  # default or uncen
 
-project:
-  name: my_movie
-  source_lang: Japanese
-  target_lang: Vietnamese
-  input_srt: 'E:\Videos\my_video.mp4'  # Video or SRT file
-  output_srt: 'E:\Videos\my_video-vi.srt'
+# Model configurations
+models:
+  default:
+    name: qwen3.5:9b
+    ollama_url: http://localhost:11434/api/generate
+    temperature: 0.05
+    repeat_penalty: 1.15
+    num_ctx: 6144
+    num_predict: 1024
+    timeout: 180
+  
+  uncen:
+    name: huihui_ai/qwen3-abliterated:8b-v2
+    ollama_url: http://localhost:11434/api/generate
+    temperature: 0.05
+    repeat_penalty: 1.15
+    num_ctx: 6144
+    num_predict: 1024
+    timeout: 180
 
+# Window presets by language
 window:
-  size: 6                           # Lines per window
-  history: 12                       # Previous lines for context
-  future: 4                         # Next lines for context
-
-model:
-  name: huihui_ai/qwen3-abliterated:8b-v2
-  ollama_url: http://localhost:11434/api/generate
-  temperature: 0.05
-  repeat_penalty: 1.15
-  num_ctx: 6144
-  num_predict: 1024
-  timeout: 180
-
-pipeline:
-  enable_glossary: true
-  retry_delay: 2
-  num_workers: 1                    # 1 = sequential, >1 = parallel
-  checkpoint_interval: 20
-  heartbeat_timeout: 600
-  circuit_breaker_threshold: 5
-  circuit_breaker_cooldown: 60
-
-glossary:
-  - source: 형님
-    target: đại ca
-    context: gangster movie
-  - source: 선배
-    target: tiền bối
-    context: workplace
+  size: 6   # Auto-set based on source language
+  history: 12
+  future: 4
 ```
+
+### Language & Window Presets
+
+| Language | Code | Window Size | History | Future |
+|----------|------|-------------|---------|--------|
+| Japanese | ja | 6 | 12 | 4 |
+| Korean | ko | 8 | 8 | 2 |
+| Chinese | zh | 10 | 12 | 4 |
+| English | en | 10 | 10 | 3 |
 
 ## Project Structure
 
@@ -190,24 +210,29 @@ flowchart TD
     B -->|Yes| C[Whisper Transcription]
     B -->|No| D[Parse SRT]
     C --> D
-    D --> E[Create Windows]
-    E --> F[For Each Window]
-    F --> G[Check Translation Memory]
-    G --> H{Cached?}
-    H -->|Yes| I[Use Cache]
-    H -->|No| J[Call Ollama LLM]
-    J --> K[Validate JSON Response]
-    K --> L[Save to Database]
-    I --> L
-    L --> M{More Windows?}
-    M -->|Yes| F
-    M -->|No| N[Export SRT]
+    D --> E[Select Translation Mode]
+    E --> F{Which Mode?}
+    F -->|Default| G[Use qwen3.5:9b]
+    F -->|Uncen| H[Use qwen3-abliterated]
+    G --> I[Create Windows]
+    H --> I
+    I --> J[For Each Window]
+    J --> K[Check Translation Memory]
+    K --> L{Cached?}
+    L -->|Yes| M[Use Cache]
+    L -->|No| N[Call Selected LLM]
+    M --> O[Save to Database]
+    N --> P[Validate JSON Response]
+    P --> O
+    O --> Q{More Windows?}
+    Q -->|Yes| J
+    Q -->|No| R[Export SRT]
 ```
 
 1. **SRT Parsing**: Reads SRT file and splits into subtitle items
 2. **Window Creation**: Groups subtitles into overlapping windows
 3. **Context Building**: Adds history and future lines for context
-4. **Translation**: Sends window to LLM with glossary and context
+4. **Translation**: Sends window to selected LLM with glossary and context
 5. **Validation**: Verifies JSON output matches expected format
 6. **Export**: Writes translated subtitles to SRT
 
@@ -227,6 +252,7 @@ flowchart TD
 - Adjust temperature (lower = more consistent)
 - Add more glossary terms
 - Increase window size for more context
+- Try different translation mode for content type
 
 ## Development
 

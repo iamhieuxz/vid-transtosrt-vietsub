@@ -4,6 +4,10 @@
 # Chinese:  size=10, history=12, future=4
 # English:  size=10, history=10, future=3
 
+# Translation Modes:
+# - default: qwen3.5:9b (general translation)
+# - uncen: huihui_ai/qwen3-abliterated:8b-v2 (adult/explicit content)
+
 whisper:
   model_size: large-v3-turbo
   device: cuda
@@ -25,14 +29,38 @@ window:
   history: 12
   future: 4
 
+# Translation mode settings
+translation:
+  mode: default  # default or uncen
+
+# Model configurations
 model:
-  name: huihui_ai/qwen3-abliterated:8b-v2
+  name: qwen3.5:9b  # Legacy default, use models section below
   ollama_url: http://localhost:11434/api/generate
   temperature: 0.05
   repeat_penalty: 1.15
   num_ctx: 6144
   num_predict: 1024
   timeout: 180
+
+models:
+  default:
+    name: qwen3.5:9b
+    ollama_url: http://localhost:11434/api/generate
+    temperature: 0.05
+    repeat_penalty: 1.15
+    num_ctx: 6144
+    num_predict: 1024
+    timeout: 180
+  
+  uncen:
+    name: huihui_ai/qwen3-abliterated:8b-v2
+    ollama_url: http://localhost:11434/api/generate
+    temperature: 0.05
+    repeat_penalty: 1.15
+    num_ctx: 6144
+    num_predict: 1024
+    timeout: 180
 
 pipeline:
   enable_glossary: true
