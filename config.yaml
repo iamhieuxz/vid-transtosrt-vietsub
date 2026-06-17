@@ -47,7 +47,7 @@ models:
   default:
     name: qwen3.5:9b
     ollama_url: http://localhost:11434/api/generate
-    temperature: 0.05
+    temperature: 0.1
     repeat_penalty: 1.15
     num_ctx: 6144
     num_predict: 1024
@@ -56,7 +56,7 @@ models:
   uncen:
     name: huihui_ai/qwen3-abliterated:8b-v2
     ollama_url: http://localhost:11434/api/generate
-    temperature: 0.05
+    temperature: 0.1
     repeat_penalty: 1.15
     num_ctx: 6144
     num_predict: 1024

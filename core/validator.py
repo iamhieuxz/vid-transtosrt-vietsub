@@ -5,7 +5,8 @@ from typing import List, Dict, Set
 logger = logging.getLogger(__name__)
 
 class Validator:
-    def validate_json_translation(self, json_data: List[Dict], expected_ids: Set[int]) -> bool:
+    def validate_json_translation(self, json_data: List[Dict], expected_ids: List[int]) -> bool:
+        """Validate JSON structure and ID ORDER."""
         if not isinstance(json_data, list):
             logger.error("JSON is not a list")
             return False
@@ -13,26 +14,18 @@ class Validator:
             logger.error(f"JSON length {len(json_data)} != expected {len(expected_ids)}")
             return False
 
-        seen_ids = set()
-        for item in json_data:
+        # Check both IDs and ORDER
+        for idx, (item, expected_id) in enumerate(zip(json_data, expected_ids)):
             if not isinstance(item, dict) or 'id' not in item or 'text' not in item:
                 logger.error("Item missing 'id' or 'text'")
                 return False
             if not isinstance(item['id'], int) or not isinstance(item['text'], str):
                 logger.error(f"Invalid type in item: {item}")
                 return False
-            if item['id'] not in expected_ids:
-                logger.error(f"id {item['id']} not in expected_ids {expected_ids}")
+            if item['id'] != expected_id:
+                logger.error(f"ID order mismatch at position {idx}: got {item['id']}, expected {expected_id}")
                 return False
-            if item['id'] in seen_ids:
-                logger.error(f"Duplicate id: {item['id']}")
-                return False
-            seen_ids.add(item['id'])
 
-        if seen_ids != expected_ids:
-            missing = expected_ids - seen_ids
-            logger.error(f"Missing ids: {missing}")
-            return False
         return True
 
     def validate_window_content(self, originals: List[str], translations: List[str]) -> bool:

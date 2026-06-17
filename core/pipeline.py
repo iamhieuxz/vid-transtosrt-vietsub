@@ -264,8 +264,8 @@ class TranslationPipeline:
             json_data = self.translator.extract_json(raw)
             if json_data is None:
                 return None
-            expected_ids = set(sub_indices)
-            if not self.validator.validate_json_translation(json_data, expected_ids):
+            # Pass list to preserve order
+            if not self.validator.validate_json_translation(json_data, sub_indices):
                 return None
             mapping = {item['id']: item['text'] for item in json_data}
             translations = [mapping.get(i, '') for i in sub_indices]

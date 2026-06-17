@@ -49,11 +49,15 @@ class Exporter:
             logger.info(f"{STATUS_ICONS['success']} Checkpoint saved: {output_path}")
 
     def _write_srt(self, items, output_path):
+        """Xuat SRT - sap xep theo start_time de dam bao thu tu dung."""
+        # Sort by start_time to ensure correct timeline order
+        sorted_items = sorted(items, key=lambda x: (x.get('start_time', ''), x.get('sub_index', 0)))
+        
         subs = pysrt.SubRipFile()
-        for item in items:
+        for idx, item in enumerate(sorted_items, start=1):
             text = item.get('translated_text') or item.get('original_text', '')
             start = SubRipTime.from_string(item['start_time'])
             end = SubRipTime.from_string(item['end_time'])
-            sub = SubRipItem(index=item['sub_index'], start=start, end=end, text=text)
+            sub = SubRipItem(index=idx, start=start, end=end, text=text)
             subs.append(sub)
         subs.save(output_path, encoding='utf-8')
