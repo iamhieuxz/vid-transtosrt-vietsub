@@ -62,7 +62,11 @@ TRANSLATION_MODES = {
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('subtitle_translator.log', encoding='utf-8', mode='a'),
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -92,11 +96,14 @@ def is_video_file(filepath):
     return filepath.lower().endswith(video_exts)
 
 
-def select_input_file_gui():
-    """Mo file picker cho input."""
+def _file_picker_ask(kind: str, default_name: str = "output.srt"):
+    """
+    Mo file picker (kind='open' hoac 'save'). Dam bao cleanup Tk root de tranh leak.
+    """
+    import tkinter as tk
+    from tkinter import filedialog
+    root = None
     try:
-        import tkinter as tk
-        from tkinter import filedialog
         try:
             root = tk._default_root
             if root is None:
@@ -106,45 +113,42 @@ def select_input_file_gui():
             root = tk.Tk()
             root.withdraw()
         root.attributes('-topmost', True)
-        file_path = filedialog.askopenfilename(
-            title="Chon file Input (Video hoac SRT)",
-            filetypes=[
-                ("Video files", "*.mp4 *.mkv *.mov *.avi *.webm"),
-                ("SRT files", "*.srt"),
-                ("All files", "*.*")
-            ]
-        )
+        if kind == 'open':
+            file_path = filedialog.askopenfilename(
+                title="Chon file Input (Video hoac SRT)",
+                filetypes=[
+                    ("Video files", "*.mp4 *.mkv *.mov *.avi *.webm"),
+                    ("SRT files", "*.srt"),
+                    ("All files", "*.*")
+                ]
+            )
+        else:
+            file_path = filedialog.asksaveasfilename(
+                title="Chon duong dan file Output",
+                defaultextension=".srt",
+                filetypes=[("SRT files", "*.srt"), ("All files", "*.*")],
+                initialfile=default_name
+            )
         return file_path if file_path else None
     except Exception as e:
         logger.error(f"GUI file picker failed: {e}")
         return None
+    finally:
+        if root is not None:
+            try:
+                root.destroy()
+            except Exception:
+                pass
+
+
+def select_input_file_gui():
+    """Mo file picker cho input."""
+    return _file_picker_ask('open')
 
 
 def select_output_file_gui(default_name="output.srt"):
     """Mo file picker cho output."""
-    try:
-        import tkinter as tk
-        from tkinter import filedialog
-        # Try to reuse existing Tk instance to avoid warnings
-        try:
-            root = tk._default_root
-            if root is None:
-                root = tk.Tk()
-                root.withdraw()
-        except AttributeError:
-            root = tk.Tk()
-            root.withdraw()
-        root.attributes('-topmost', True)
-        file_path = filedialog.asksaveasfilename(
-            title="Chon duong dan file Output",
-            defaultextension=".srt",
-            filetypes=[("SRT files", "*.srt"), ("All files", "*.*")],
-            initialfile=default_name
-        )
-        return file_path if file_path else None
-    except Exception as e:
-        logger.error(f"GUI file picker failed: {e}")
-        return None
+    return _file_picker_ask('save', default_name)
 
 
 def load_config():
@@ -570,6 +574,8 @@ def run_translation(config):
                 console.print(f"{STATUS_ICONS['warning']} [yellow]Da huy.[/yellow]")
                 return
             db.update_project_status(project_id, 'pending')
+        elif proj['status'] in ('partial', 'failed'):
+            console.print(f"{STATUS_ICONS['warning']} [yellow]Project dang o trang thai '{proj['status']}', tiep tuc tu noi da dung.[/yellow]")
     else:
         project_id = db.create_project(
             name=project_name,

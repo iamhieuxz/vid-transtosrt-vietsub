@@ -27,8 +27,11 @@ class WhisperTranscriber:
 
     def extract_audio(self, video_path, audio_path=None):
         """Trich xuat audio 16kHz mono WAV tu video bang ffmpeg."""
+        tmp_handle = None
         if audio_path is None:
-            audio_path = tempfile.mktemp(suffix='.wav')
+            tmp_handle = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
+            audio_path = tmp_handle.name
+            tmp_handle.close()
         cmd = [
             "ffmpeg",
             "-i", video_path,
@@ -52,7 +55,9 @@ class WhisperTranscriber:
         """
         audio_path = None
         try:
-            audio_path = tempfile.mktemp(suffix='.wav')
+            tmp_handle = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
+            audio_path = tmp_handle.name
+            tmp_handle.close()
             self.extract_audio(video_path, audio_path)
 
             lang = language or self.language

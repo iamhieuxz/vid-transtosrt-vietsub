@@ -5,6 +5,7 @@ import os
 from typing import List, Dict
 from concurrent.futures import ThreadPoolExecutor
 from rich.console import Console
+from rich.text import Text
 from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn, SpinnerColumn
 from rich.table import Table
 from .database import Database
@@ -42,7 +43,9 @@ class TranslationPipeline:
             num_predict=num_predict,
             timeout=config['model'].get('timeout', 120),
             circuit_breaker_threshold=config['pipeline'].get('circuit_breaker_threshold', 5),
-            circuit_breaker_cooldown=config['pipeline'].get('circuit_breaker_cooldown', 60)
+            circuit_breaker_cooldown=config['pipeline'].get('circuit_breaker_cooldown', 60),
+            max_retries=config['pipeline'].get('max_retries', 3),
+            retry_delay=config['pipeline'].get('retry_delay', 2),
         )
         self.exporter = Exporter(self.db)
         self.validator = Validator()
@@ -140,14 +143,22 @@ class TranslationPipeline:
         total_windows = len(total_items) // project['window_size'] + (1 if len(total_items) % project['window_size'] else 0)
 
         completed = 0
+        failed = 0
         checkpoint_cnt = 0
+        failed_windows = set()
+
+        class FailedColumn(TextColumn):
+            def __init__(self):
+                super().__init__("")
+            def render(self, task):
+                return Text(f"({completed}/{failed}/{task.total})")
 
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
             BarColumn(),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-            TextColumn("({task.completed}/{task.total})"),
+            FailedColumn(),
             TimeRemainingColumn(),
             console=console
         ) as progress:
@@ -157,6 +168,14 @@ class TranslationPipeline:
                 task_info = self.db.claim_task(project_id)
                 if not task_info:
                     break
+                win_id = task_info['id']
+                win_idx = task_info['window_index']
+
+                # Prevent infinite loop: if this window already failed all retries, skip it
+                if win_id in failed_windows:
+                    logger.warning(f"{STATUS_ICONS['warning']} Window {win_idx} already exhausted retries, skipping")
+                    break
+
                 success = self._process_single_task(project_id, task_info, project, use_translated_history=True)
                 if success:
                     completed += 1
@@ -164,12 +183,23 @@ class TranslationPipeline:
                     if checkpoint_cnt % self.checkpoint_interval == 0:
                         self.exporter.export_incremental(project_id, project['output_srt'])
                         logger.info(f"{STATUS_ICONS['success']} Checkpoint at {checkpoint_cnt} windows")
-                progress.update(task, advance=1, completed=completed)
-                time.sleep(0.05)
+                else:
+                    failed += 1
+                    with self.db._get_connection() as conn:
+                        row = conn.execute("SELECT retry_count FROM windows WHERE id=?", (win_id,)).fetchone()
+                    if row and row['retry_count'] >= 3:
+                        failed_windows.add(win_id)
+                        self.db.mark_task_dead(win_id, "Exhausted all retries")
+                        logger.error(f"{STATUS_ICONS['error']} Window {win_idx} exhausted all retries ({row['retry_count']}/3), moved to dead letter")
+
+                progress.update(task, advance=1)
+                progress.refresh()
 
     def _process_parallel(self, project_id, project):
         total_items = self.db.get_all_items(project_id)
         total_windows = len(total_items) // project['window_size'] + (1 if len(total_items) % project['window_size'] else 0)
+        max_failures = config_max_failures = self.config.get('pipeline', {}).get('max_failures', 50) if isinstance(self.config.get('pipeline'), dict) else 50
+        consecutive_failures = 0
 
         with Progress(
             SpinnerColumn(),
@@ -185,22 +215,51 @@ class TranslationPipeline:
             with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
                 futures = {}
                 checkpoint_cnt = 0
+                completed_cnt = 0
+                failed_cnt = 0
+                failed_windows = set()
+                idle_rounds = 0
                 while True:
                     if len(futures) < self.num_workers:
                         task_info = self.db.claim_task(project_id)
                         if task_info:
+                            win_id = task_info['id']
+                            if win_id in failed_windows:
+                                self.db.mark_task_dead(win_id, "Exhausted retries")
+                                continue
                             future = executor.submit(self._process_single_task, project_id, task_info, project, False)
                             futures[future] = task_info
+                            idle_rounds = 0
                         elif not futures:
                             break
+                        else:
+                            idle_rounds += 1
+                            if idle_rounds > 50:
+                                break
                     done = [f for f in futures if f.done()]
                     for f in done:
-                        if f.result():
+                        try:
+                            ok = bool(f.result())
+                        except Exception:
+                            ok = False
+                        t_info = futures[f]
+                        if ok:
+                            completed_cnt += 1
                             checkpoint_cnt += 1
                             if checkpoint_cnt % self.checkpoint_interval == 0:
                                 self.exporter.export_incremental(project_id, project['output_srt'])
-                        progress.update(task, advance=1)
+                        else:
+                            failed_cnt += 1
+                            with self.db._get_connection() as conn:
+                                row = conn.execute("SELECT retry_count FROM windows WHERE id=?", (t_info['id'],)).fetchone()
+                            if row and row['retry_count'] >= 3:
+                                failed_windows.add(t_info['id'])
+                                self.db.mark_task_dead(t_info['id'], "Exhausted retries")
+                        progress.update(task, advance=1, completed=completed_cnt)
                         del futures[f]
+                    if failed_cnt >= max_failures and completed_cnt == 0:
+                        logger.error(f"Aborting parallel: {failed_cnt} consecutive failures with 0 success")
+                        break
                     time.sleep(0.1)
 
     def _process_single_task(self, project_id, task, project, use_translated_history):

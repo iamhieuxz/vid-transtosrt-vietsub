@@ -1,35 +1,38 @@
-# Byte-compiled / optimized / DLL files
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
+.Python
+*.egg-info/
 
 # Virtual environment
 .venv/
 venv/
+env/
 ENV/
 
 # IDE
-.idea/
 .vscode/
+.idea/
 *.swp
 *.swo
-
-# Database
-*.db
-*.db-wal
-*.db-shm
-
-# Output files
-*.srt
-*_whisper.srt
-
-# Temp files
-temp_*.wav
-*.tmp
 
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# Logs
-*.log
+# Project artifacts
+translation.db
+translation.db-journal
+translation.db-wal
+translation.db-shm
+subtitle_translator.log
+*.tmp
+*.bak
+
+# Whisper model cache (downloaded on first run)
+models/
+*.bin
+.cache/

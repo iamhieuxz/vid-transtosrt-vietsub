@@ -7,17 +7,17 @@ whisper:
   vad_filter: true
   min_silence_duration_ms: 500
 project:
-  name: my_project
+  name: test5
   source_lang: Chinese
   target_lang: Vietnamese
-  input_srt: E:/trans-video/test3-sub-translated.mp4
-  output_srt: E:/trans-video/test3-vi.srt
+  input_srt: E:/trans-video/test4.mp4
+  output_srt: E:/trans-video/test5.srt
 window:
   size: 10
   history: 12
   future: 4
 translation:
-  mode: default
+  mode: uncen
 model:
   name: qwen3.5:9b
   ollama_url: http://localhost:11434/api/generate

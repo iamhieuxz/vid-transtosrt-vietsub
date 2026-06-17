@@ -1,0 +1,77 @@
+# Change Log
+
+Tất cả thay đổi đáng chú ý của dự án sẽ được ghi vào file này.
+
+## [Unreleased] - 2026-06-17
+
+### Code Review & Bug Fixes
+
+#### P0 — Critical (Runtime-breaking)
+
+- **[FIX] `core/database.py` — `claim_task` nested transaction bug.**
+  `_get_connection` context manager không khởi tạo explicit transaction, việc gọi thêm `BEGIN IMMEDIATE` bên trong gây transaction lồng không hợp lệ trên nhiều bản sqlite3 (`RuntimeError: recursive use of cursors`). Đã bỏ `BEGIN IMMEDIATE` thủ công, dùng implicit transaction từ `with conn`. Đổi `except:` thành `except Exception:` để không nuốt `SystemExit`/`KeyboardInterrupt`.
+
+- **[FIX] `core/database.py` — `commit_window` cùng pattern nested transaction.** Bỏ `conn.execute("BEGIN")` thừa, fix `except:` rộng.
+
+- **[FIX] `core/pipeline.py` — `FailedColumn` `Text` import thiếu.** Thêm `from rich.text import Text`.
+
+- **[FIX] `core/pipeline.py` — `TextColumn.__init__()` thiếu `text_format` arg.** Override `__init__` để gọi `super().__init__("")`.
+
+- **[FIX] `core/pipeline.py` — Rich `Task` object không có attribute `failed`.** Không thể truyền `failed=0` vào `add_task()` / `progress.update()`. Tạo class con `FailedColumn(TextColumn)` đọc `failed` từ closure.
+
+- **[FIX] `core/pipeline.py` — `_process_sequential` không move failed window vào dead_letter.** Khi `retry_count >= 3`, window bị "stuck" mãi ở status='failed' và `claim_task` liên tục pick lại. Đã thêm `mark_task_dead` để chuyển vào dead letter queue khi exhausted.
+
+- **[FIX] `core/pipeline.py` — `_process_parallel` infinite loop không có guard.** Thiếu `failed_windows` tracking, `idle_rounds` break, `max_failures` abort. Khi song song claim task fail hết thì vòng while chạy vô hạn. Đã thêm đầy đủ guard giống sequential path.
+
+#### P1 — Business logic
+
+- **[FIX] `core/pipeline.py` — `progress.update` thừa `completed=completed`.** `advance=1` đã tăng `task.completed`; truyền thêm `completed=completed` ép về giá trị tổng khiến thanh progress hiển thị lệch.
+
+- **[FIX] `main.py` — Resume project dở dang (status=`partial`/`failed`).** Trước đây code chỉ hỏi "chạy lại?" với status=`completed`; giờ với `partial`/`failed` tự động tiếp tục từ checkpoint.
+
+- **[FIX] `main.py` — TK root leak trong file pickers.** Mỗi lần gọi `select_input_file_gui` / `select_output_file_gui` tạo `tk.Tk()` mới nhưng không `destroy()`. Gom thành helper `_file_picker_ask` với `try/finally` đảm bảo cleanup.
+
+- **[FIX] `core/transcriber.py` — `tempfile.mktemp` deprecation & race condition.** Thay bằng `tempfile.NamedTemporaryFile(delete=False)` để tránh TOCTOU race.
+
+- **[ADD] `main.py` — File logging handler.** Mọi log ghi đồng thời ra `subtitle_translator.log` (append mode) phục vụ debug khi crash.
+
+### Đánh giá dự án tổng quan
+
+#### Điểm tốt
+
+- **Kiến trúc module rõ ràng:** `database / pipeline / transcriber / translator / validator / exporter` tách biệt, dễ maintain.
+- **Production-grade SQLite:** WAL mode, `busy_timeout=30s`, UPSERT cho translation memory, transaction IMMEDIATE-style chống race.
+- **Retry & resilience:** retry_count riêng cho mỗi window, dead-letter queue, recover stuck tasks, circuit breaker cho Ollama.
+- **UX:** Rich console menu tiếng Việt, GUI file picker, progress bar với spinner, incremental checkpoint.
+- **Anti-hallucination:** Validator kiểm tra length, ID order, placeholder preservation, repetition detection.
+- **Translation Memory** với domain isolation (`UNIQUE(source_lang, target_lang, source_text, domain)`) + glossary injection.
+
+#### Vấn đề còn tồn đọng (P2, chưa fix)
+
+- `core/validator.py` — `_similarity` dùng Jaccard trên `set(text.split())` có thể false-positive với thuật ngữ chuyên ngành lặp lại; threshold 0.5 chưa qua kiểm chứng trên tiếng Việt/Trung thật.
+- `core/pipeline.py` — `_process_parallel` truyền `use_translated_history=False` bỏ qua history → giảm chất lượng dịch khi song song.
+- `config.yaml` — URL Ollama lặp 3 lần (`model.ollama_url`, `models.default.ollama_url`, `models.uncen.ollama_url`); nên tách thành biến chung.
+- `main.py` — Chưa có flag `--verbose` / `--quiet` điều khiển log level.
+- `core/database.py` — `recover_stuck_tasks` chỉ reset status='processing' mà không cộng dồn retry, có thể stuck task do lỗi runtime (không phải LLM) retry vô ích.
+- `core/pipeline.py` — `_translate_window` `continue` khi không parse được line → length mismatch với LLM output → window fail; nên `break` hoặc fail-fast.
+- Tests: chưa có unit test / integration test nào; nên viết pytest cho validator + database (claim/commit/mark_failed/dead_letter) + translator JSON extraction.
+
+### Bảng ưu tiên xử lý (sau khi fix đợt này)
+
+| # | Mức | Mục | File | Trạng thái |
+|---|-----|-----|------|------------|
+| 1 | P0 | Claim/commit nested transaction | `database.py` | ✅ fixed |
+| 2 | P0 | Failed window không move dead_letter (sequential) | `pipeline.py` | ✅ fixed |
+| 3 | P0 | Parallel infinite loop không guard | `pipeline.py` | ✅ fixed |
+| 4 | P0 | Rich TextColumn/FailedColumn | `pipeline.py` | ✅ fixed |
+| 5 | P1 | `progress.update` thừa `completed=completed` | `pipeline.py` | ✅ fixed |
+| 6 | P1 | Resume dở (partial/failed) | `main.py` | ✅ fixed |
+| 7 | P1 | TK root leak | `main.py` | ✅ fixed |
+| 8 | P1 | `tempfile.mktemp` deprecation | `transcriber.py` | ✅ fixed |
+| 9 | P1 | File logging handler | `main.py` | ✅ fixed |
+| 10 | P2 | Validator similarity threshold | `validator.py` | ⏳ TODO |
+| 11 | P2 | Parallel skip history | `pipeline.py` | ⏳ TODO |
+| 12 | P2 | Config URL trùng 3 chỗ | `config.yaml` + code | ⏳ TODO |
+| 13 | P2 | Verbose/quiet flag | `main.py` | ⏳ TODO |
+| 14 | P2 | recover_stuck_tasks retry accumulation | `database.py` | ⏳ TODO |
+| 15 | P2 | Unittest cho validator/db/translator | `tests/` | ⏳ TODO |

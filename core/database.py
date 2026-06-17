@@ -148,18 +148,16 @@ class Database:
 
     def claim_task(self, project_id):
         with self._get_connection() as conn:
-            conn.execute("BEGIN IMMEDIATE")
             try:
                 row = conn.execute('''SELECT * FROM windows WHERE project_id=? AND status IN ('pending','failed')
                                       AND retry_count < 3 ORDER BY window_index LIMIT 1''', (project_id,)).fetchone()
                 if not row:
-                    conn.rollback()
                     return None
                 now = time.time()
                 conn.execute("UPDATE windows SET status='processing', processing_started_at=? WHERE id=?", (now, row['id']))
                 conn.commit()
                 return dict(row)
-            except:
+            except Exception:
                 conn.rollback()
                 raise
 
@@ -168,10 +166,8 @@ class Database:
         Gộp update_item_translation_bulk và mark_task_done trong 1 transaction.
         """
         with self._get_connection() as conn:
-            conn.execute("BEGIN")
             try:
                 c = conn.cursor()
-                # update items
                 rows = c.execute('''SELECT id, sub_index FROM subtitle_items
                                     WHERE project_id=? AND sub_index BETWEEN ? AND ? ORDER BY sub_index''',
                                  (project_id, start_sub, end_sub)).fetchall()
@@ -179,11 +175,10 @@ class Database:
                     raise ValueError("Translation count mismatch")
                 updates = [(trans, 'translated', r['id']) for r, trans in zip(rows, translations)]
                 c.executemany("UPDATE subtitle_items SET translated_text=?, status=? WHERE id=?", updates)
-                # mark window done
                 c.execute("UPDATE windows SET translated_text=?, status='completed', processing_started_at=NULL WHERE id=?",
                           ("\n".join(translations), window_id))
                 conn.commit()
-            except:
+            except Exception:
                 conn.rollback()
                 raise
 
