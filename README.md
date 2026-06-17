@@ -70,6 +70,24 @@ Translating... |████████████████████░�
 
 ## Installation
 
+### Quick Start (Windows) - Recommended for beginners
+
+1. Download/Clone the repository
+2. Double-click `run.bat` - everything will be set up automatically!
+
+```batch
+run.bat
+```
+
+The script will:
+- Create virtual environment if not exists
+- Install all dependencies
+- Check Ollama connection
+- Create default config.yaml if needed
+- Launch the application
+
+### Manual Installation
+
 ```bash
 # Clone the repository
 git clone https://github.com/iamhieuxz/vid-transtosrt-vietsub.git
