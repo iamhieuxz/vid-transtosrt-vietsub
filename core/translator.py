@@ -1,3 +1,4 @@
+import os
 import requests
 import logging
 import time
@@ -13,7 +14,9 @@ class TranslatorService:
                  num_ctx=4096, num_predict=1024, timeout=120,
                  circuit_breaker_threshold=5, circuit_breaker_cooldown=60):
         self.model = model_name
-        self.url = ollama_url
+        self.url = ollama_url or os.environ.get(
+            'OLLAMA_URL', 'http://localhost:11434/api/generate'
+        )
         self.temperature = temperature
         self.repeat_penalty = repeat_penalty
         self.num_ctx = num_ctx

@@ -34,17 +34,14 @@ class Validator:
             return False
 
         for orig, trans in zip(originals, translations):
-            # Kiểm tra placeholder
-            placeholders = re.findall(r'%[sd]|\{[^{}]+\}', orig)
+            placeholders = re.findall(r'%[sd]|%[0-9]*[diouxXeEfFgGcrsab%]|\{[^}]+\}', orig)
             for ph in placeholders:
                 if ph not in trans:
                     logger.error(f"Missing placeholder '{ph}' in: {trans}")
                     return False
-            # Dòng gốc không rỗng mà dịch rỗng
             if orig.strip() and not trans.strip():
                 logger.error(f"Empty translation for: {orig}")
                 return False
-            # Cảnh báo nếu bản dịch dài bất thường (hallucination)
             if len(orig) > 0 and len(trans) / len(orig) > 8:
                 logger.warning(f"Translation is too long: {orig} -> {trans[:50]}...")
         return True

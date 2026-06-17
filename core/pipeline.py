@@ -30,13 +30,16 @@ class TranslationPipeline:
     def __init__(self, config: dict):
         self.config = config
         self.db = Database()
+        num_predict = config['model'].get('num_predict', 1024)
+        if num_predict < 512:
+            logger.warning(f"{STATUS_ICONS['warning']} num_predict={num_predict} is too low, consider setting >= 512")
         self.translator = TranslatorService(
             model_name=config['model']['name'],
             ollama_url=config['model']['ollama_url'],
             temperature=config['model'].get('temperature', 0.1),
             repeat_penalty=config['model'].get('repeat_penalty', 1.2),
             num_ctx=config['model'].get('num_ctx', 4096),
-            num_predict=config['model'].get('num_predict', 1024),
+            num_predict=num_predict,
             timeout=config['model'].get('timeout', 120),
             circuit_breaker_threshold=config['pipeline'].get('circuit_breaker_threshold', 5),
             circuit_breaker_cooldown=config['pipeline'].get('circuit_breaker_cooldown', 60)
@@ -196,7 +199,7 @@ class TranslationPipeline:
                             checkpoint_cnt += 1
                             if checkpoint_cnt % self.checkpoint_interval == 0:
                                 self.exporter.export_incremental(project_id, project['output_srt'])
-                        progress.update(task, advance=1, completed=progress.completed + 1)
+                        progress.update(task, advance=1)
                         del futures[f]
                     time.sleep(0.1)
 

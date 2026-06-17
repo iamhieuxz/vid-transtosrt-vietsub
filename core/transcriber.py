@@ -93,8 +93,9 @@ class WhisperTranscriber:
 
     def _format_time(self, seconds):
         """Chuyen giay thanh dinh dang SRT: HH:MM:SS,mmm"""
-        hrs = int(seconds // 3600)
-        mins = int((seconds % 3600) // 60)
-        secs = int(seconds % 60)
-        millis = int((seconds - int(seconds)) * 1000)
+        total_ms = round(seconds * 1000)
+        hrs = total_ms // 3600000
+        mins = (total_ms % 3600000) // 60000
+        secs = (total_ms % 60000) // 1000
+        millis = total_ms % 1000
         return f"{hrs:02d}:{mins:02d}:{secs:02d},{millis:03d}"

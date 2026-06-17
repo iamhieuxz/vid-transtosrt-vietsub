@@ -9,6 +9,8 @@ from core.database import Database
 from core.pipeline import TranslationPipeline
 from core.transcriber import WhisperTranscriber
 
+__version__ = "1.2"
+
 console = Console()
 
 STATUS_ICONS = {
@@ -95,8 +97,14 @@ def select_input_file_gui():
     try:
         import tkinter as tk
         from tkinter import filedialog
-        root = tk.Tk()
-        root.withdraw()
+        try:
+            root = tk._default_root
+            if root is None:
+                root = tk.Tk()
+                root.withdraw()
+        except AttributeError:
+            root = tk.Tk()
+            root.withdraw()
         root.attributes('-topmost', True)
         file_path = filedialog.askopenfilename(
             title="Chon file Input (Video hoac SRT)",
@@ -106,7 +114,6 @@ def select_input_file_gui():
                 ("All files", "*.*")
             ]
         )
-        root.destroy()
         return file_path if file_path else None
     except Exception as e:
         logger.error(f"GUI file picker failed: {e}")
@@ -118,8 +125,15 @@ def select_output_file_gui(default_name="output.srt"):
     try:
         import tkinter as tk
         from tkinter import filedialog
-        root = tk.Tk()
-        root.withdraw()
+        # Try to reuse existing Tk instance to avoid warnings
+        try:
+            root = tk._default_root
+            if root is None:
+                root = tk.Tk()
+                root.withdraw()
+        except AttributeError:
+            root = tk.Tk()
+            root.withdraw()
         root.attributes('-topmost', True)
         file_path = filedialog.asksaveasfilename(
             title="Chon duong dan file Output",
@@ -127,7 +141,6 @@ def select_output_file_gui(default_name="output.srt"):
             filetypes=[("SRT files", "*.srt"), ("All files", "*.*")],
             initialfile=default_name
         )
-        root.destroy()
         return file_path if file_path else None
     except Exception as e:
         logger.error(f"GUI file picker failed: {e}")
@@ -151,7 +164,7 @@ def save_config(config):
 def print_header():
     """In header cua chuong trinh."""
     console.print("\n[bold cyan]" + "=" * 58 + "[/bold cyan]")
-    console.print("[bold cyan]        SUBTITLE TRANSLATOR v1.2[/bold cyan]")
+    console.print(f"[bold cyan]        SUBTITLE TRANSLATOR v{__version__}[/bold cyan]")
     console.print("[bold cyan]" + "=" * 58 + "[/bold cyan]\n")
 
 
@@ -463,13 +476,16 @@ def validate_config(config):
         if 'name' not in config['project']:
             errors.append("Thieu 'name' trong cau hinh")
     
-    if 'model' not in config:
-        errors.append("Thieu muc 'model' trong cau hinh")
-    else:
-        if 'name' not in config['model']:
-            errors.append("Thieu 'name' trong cau hinh model")
-        if 'ollama_url' not in config['model']:
-            errors.append("Thieu 'ollama_url' trong cau hinh model")
+    mode = config.get('translation', {}).get('mode', 'default')
+    if mode not in ('default', 'uncen'):
+        errors.append(f"'translation.mode' phai la 'default' hoac 'uncen', hien tai: '{mode}'")
+    
+    if 'model' not in config and 'models' not in config:
+        errors.append("Thieu muc 'model' hoac 'models' trong cau hinh")
+    elif 'models' in config:
+        for m, v in config['models'].items():
+            if 'name' not in v:
+                errors.append(f"Thieu 'name' trong models.{m}")
     
     return errors
 
