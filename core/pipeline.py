@@ -325,9 +325,10 @@ YÊU CẦU NGHIÊM NGẶT:
 - KHÔNG lặp lại cùng một cụm từ hoặc câu nhiều lần
 - Trả về đúng JSON array với {num_lines} phần tử: [{{"id": sub_index, "text": "bản dịch"}}, ...]
 - KHÔNG thêm bất kỳ text nào khác, chỉ có JSON
+- KHÔNG suy nghĩ trước, trả lời ngay bằng JSON
 - Dừng ngay sau dấu ] của JSON
 
-### STOP ###
+### Output:"""
 
     def _save_to_tm(self, project, source_lines, translations):
         src_lang = self.config['project']['source_lang']
