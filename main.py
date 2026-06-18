@@ -48,7 +48,7 @@ WINDOW_PRESETS = {
 TRANSLATION_MODES = {
     'default': {
         'name': 'default',
-        'display': 'Mac dinh (qwen3.5)',
+        'display': 'Mac dinh (hunyuan-mt-abliterated)',
         'description': 'Che do dich thong thuong',
         'icon': '[STD]'
     },
