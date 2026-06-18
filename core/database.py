@@ -210,6 +210,30 @@ class Database:
         with self._get_connection() as conn:
             return conn.execute("SELECT COUNT(*) FROM dead_letter_queue WHERE project_id=?", (project_id,)).fetchone()[0]
 
+    def get_dead_letter_windows(self, project_id):
+        """Trả về list dead windows để recovery."""
+        with self._get_connection() as conn:
+            rows = conn.execute('''SELECT dl.id, dl.window_id, dl.window_index, dl.original_text,
+                                          dl.error_message, w.start_sub_index, w.end_sub_index,
+                                          w.start_pos, w.end_pos
+                                   FROM dead_letter_queue dl
+                                   JOIN windows w ON dl.window_id = w.id
+                                   WHERE dl.project_id=?
+                                   ORDER BY dl.window_index''',
+                                (project_id,)).fetchall()
+            return [dict(r) for r in rows]
+
+    def remove_dead_letter(self, dl_id):
+        with self._get_connection() as conn:
+            conn.execute("DELETE FROM dead_letter_queue WHERE id=?", (dl_id,))
+            conn.commit()
+
+    def reactivate_window(self, window_id):
+        """Đưa window từ dead_letter về pending để xử lý lại."""
+        with self._get_connection() as conn:
+            conn.execute("UPDATE windows SET status='pending', retry_count=0, processing_started_at=NULL WHERE id=?", (window_id,))
+            conn.commit()
+
     def recover_stuck_tasks(self, project_id, timeout_seconds=600):
         threshold = time.time() - timeout_seconds
         with self._get_connection() as conn:

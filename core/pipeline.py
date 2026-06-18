@@ -207,6 +207,13 @@ class TranslationPipeline:
 
         pending = self.db.count_pending_windows(project_id)
         dead = self.db.count_dead_letter(project_id)
+
+        # Recovery dead windows: 3-pass (raw → polish → validate & save)
+        if dead > 0:
+            recovered = self._recover_dead_letters(project_id, project)
+            # Re-count after recovery
+            dead = self.db.count_dead_letter(project_id)
+
         if dead > 0:
             self.db.update_project_status(project_id, 'completed_with_errors')
         elif pending == 0:
@@ -570,3 +577,100 @@ class TranslationPipeline:
             for s, t in zip(source_lines, translations):
                 if s.strip() and t.strip():
                     self.db.save_translation_memory(src_lang, tgt_lang, s, t, domain=domain, confidence=0.95, min_char_count=4)
+
+    def _recover_dead_letters(self, project_id, project):
+        """
+        Recovery 3-pass cho dead windows:
+          Pass 1 (raw)    — dịch thô word-by-word, chunk nhỏ
+          Pass 2 (polish) — trau chuốt câu từ, ngữ cảnh, tiếng lóng
+          Pass 3 (commit) — validate & lưu vào DB
+        """
+        dead_windows = self.db.get_dead_letter_windows(project_id)
+        if not dead_windows:
+            return 0
+
+        recovered = 0
+        src_lang = self.config['project']['source_lang']
+        tgt_lang = self.config['project']['target_lang']
+        glossary = self._get_glossary(project_id) if self.enable_glossary else []
+        all_items = self.db.get_all_items(project_id)
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{3.0f}%"),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task(
+                f"[cyan]Recovering {len(dead_windows)} dead windows...", total=len(dead_windows)
+            )
+
+            for dw in dead_windows:
+                progress.advance(task)
+                progress.refresh()
+
+                # Parse source lines từ original_text
+                orig_lines_with_ids = [l.strip() for l in dw['original_text'].split('\n') if l.strip()]
+                sub_indices = []
+                source_lines = []
+                for line in orig_lines_with_ids:
+                    m = re.match(r'^\[(\d+)\]\s*(.*)', line)
+                    if m:
+                        sub_indices.append(int(m.group(1)))
+                        source_lines.append(m.group(2).strip())
+
+                if not source_lines:
+                    self.db.remove_dead_letter(dw['id'])
+                    recovered += 1
+                    continue
+
+                # Lấy context xung quanh dead window để polish
+                start_pos = dw['start_pos']
+                end_pos = dw['end_pos']
+                hist_items = all_items[max(0, start_pos - 5):start_pos]
+                hist_trans = "\n".join(
+                    f"[{it['sub_index']}] {it.get('translated_text') or it['original_text']}"
+                    for it in hist_items
+                )
+                fut_items = all_items[end_pos + 1:end_pos + 6]
+                fut_src = "\n".join(
+                    f"[{it['sub_index']}] {it['original_text']}"
+                    for it in fut_items
+                )
+
+                logger.info(f"Recovery[{dw['window_index']}]: pass-1 raw translate ({len(source_lines)} lines)")
+                raw_trans = self.translator.raw_translate(source_lines, src_lang, tgt_lang, glossary_terms=glossary)
+                if raw_trans is None or len(raw_trans) != len(source_lines):
+                    logger.error(f"Recovery[{dw['window_index']}]: raw_translate returned invalid result, skipping")
+                    continue
+
+                logger.info(f"Recovery[{dw['window_index']}]: pass-2 polish translate")
+                polished = self.translator.polish_translate(
+                    source_lines, raw_trans, src_lang, tgt_lang,
+                    context_before=hist_trans, context_after=fut_src,
+                )
+                if polished is None:
+                    polished = raw_trans  # fallback giữ nguyên rough
+
+                # Validate & commit
+                if not self.validator.validate_window_content(source_lines, polished):
+                    logger.warning(f"Recovery[{dw['window_index']}]: polished content failed validation, trying raw")
+                    if not self.validator.validate_window_content(source_lines, raw_trans):
+                        logger.error(f"Recovery[{dw['window_index']}]: both raw & polished failed validation, skipping")
+                        continue
+                    polished = raw_trans
+
+                try:
+                    self.db.commit_window(project_id, dw['window_id'], dw['start_sub_index'], dw['end_sub_index'], polished)
+                    self._save_to_tm(project, source_lines, polished)
+                    self.db.remove_dead_letter(dw['id'])
+                    logger.info(f"Recovery[{dw['window_index']}]: saved {len(polished)} lines")
+                    recovered += 1
+                except Exception as e:
+                    logger.error(f"Recovery[{dw['window_index']}]: commit failed: {e}")
+                    continue
+
+        console.print(f"{STATUS_ICONS['success']} [green]Recovered {recovered}/{len(dead_windows)} dead windows[/green]")
+        return recovered

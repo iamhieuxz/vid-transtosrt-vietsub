@@ -186,3 +186,102 @@ class TranslatorService:
         except Exception as e:
             logger.warning(f"_translate_single failed for '{text[:30]}...': {e}")
             return None
+
+    def raw_translate(
+        self,
+        source_lines: List[str],
+        src_lang: str,
+        tgt_lang: str,
+        glossary_terms: Optional[List[dict]] = None,
+    ) -> Optional[List[str]]:
+        """
+        Pass 1 của recovery — dịch thô word-by-word / chunk nhỏ, không cần ngữ cảnh.
+        Trả về list translation theo thứ tự source_lines, hoặc None nếu thất bại.
+        """
+        translations = []
+        chunk_size = 3
+
+        for i in range(0, len(source_lines), chunk_size):
+            chunk = source_lines[i:i + chunk_size]
+            chunk_text = "\n".join(f"{j+1}. {line}" for j, line in enumerate(chunk))
+
+            glossary_block = ""
+            if glossary_terms:
+                glossary_block = "MANDATORY GLOSSARY:\n" + "\n".join(
+                    f"- {t['source_term']} -> {t['target_term']}" for t in glossary_terms
+                ) + "\n"
+
+            prompt = (
+                f"Translate the following {src_lang} lines to {tgt_lang} literally, "
+                f"preserving meaning word-by-word.\n"
+                f"{glossary_block}"
+                f"Return ONLY the translations, one per line, matching the order:\n"
+                f"{chunk_text}"
+            )
+
+            try:
+                raw = self.generate(prompt, temperature=0.0)
+                raw_lines = [l.strip() for l in raw.strip().split("\n") if l.strip()]
+                for j, _ in enumerate(chunk):
+                    if j < len(raw_lines):
+                        translations.append(raw_lines[j].strip())
+                    else:
+                        single = self._translate_single(source_lines[i + j], src_lang, tgt_lang, glossary_terms)
+                        translations.append(single if single else source_lines[i + j])
+            except Exception as e:
+                logger.warning(f"raw_translate chunk {i} failed: {e}, falling back to single")
+                for j in range(len(chunk)):
+                    single = self._translate_single(source_lines[i + j], src_lang, tgt_lang, glossary_terms)
+                    translations.append(single if single else source_lines[i + j])
+
+        return translations if translations else None
+
+    def polish_translate(
+        self,
+        source_lines: List[str],
+        raw_translations: List[str],
+        src_lang: str,
+        tgt_lang: str,
+        context_before: str = "",
+        context_after: str = "",
+    ) -> Optional[List[str]]:
+        """
+        Pass 2 của recovery — làm mượt câu từ từ bản dịch thô.
+        Cải thiện: ngữ pháp, cách dùng tiếng lóng, ngữ điệu, ngữ cảnh.
+        Trả về list đã trau chuốt theo thứ tự source_lines, hoặc None nếu thất bại.
+        """
+        # Ghép thành cặp để dịch theo chunk
+        pairs = "\n".join(
+            f"ORIGINAL: {s}\nROUGH: {r}" for s, r in zip(source_lines, raw_translations)
+        )
+
+        prompt = (
+            f"You are a professional subtitle editor refining {src_lang}→{tgt_lang} translations.\n"
+            f"Given the original lines and their rough translations, rewrite each line to be:\n"
+            f"  - Natural, fluent, and contextually accurate\n"
+            f"  - Using colloquial/slang expressions where appropriate\n"
+            f"  - Consistent in tone and register with the surrounding context\n"
+            f"  - Preserving the original meaning and subtitle rhythm\n\n"
+            f"Context before:\n{context_before or '(none)'}\n\n"
+            f"Context after:\n{context_after or '(none)'}\n\n"
+            f"Rewrite each line:\n{pairs}\n\n"
+            f"Return ONLY the refined translations, one per line, in the same order. No numbering, no extra text."
+        )
+
+        try:
+            raw = self.generate(prompt, temperature=0.2)
+            lines = [l.strip() for l in raw.strip().split("\n") if l.strip()]
+            # Map the result lines back to source_lines in order
+            result = []
+            for j in range(len(source_lines)):
+                if j < len(lines):
+                    result.append(lines[j].strip())
+                elif j < len(raw_translations):
+                    result.append(raw_translations[j])  # fallback giữ nguyên rough
+                else:
+                    result.append(source_lines[j])
+            logger.info(f"polish_translate: refined {len(result)} lines")
+            return result
+        except Exception as e:
+            logger.warning(f"polish_translate failed: {e}, falling back to rough translations")
+            return raw_translations
