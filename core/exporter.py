@@ -50,14 +50,23 @@ class Exporter:
 
     def _write_srt(self, items, output_path):
         """Xuat SRT - sap xep theo start_time de dam bao thu tu dung."""
-        # Sort by start_time to ensure correct timeline order
         sorted_items = sorted(items, key=lambda x: (x.get('start_time', ''), x.get('sub_index', 0)))
-        
+
+        untranslated_count = 0
         subs = pysrt.SubRipFile()
         for idx, item in enumerate(sorted_items, start=1):
-            text = item.get('translated_text') or item.get('original_text', '')
+            text = item.get('translated_text') or ''
+            if not text:
+                untranslated_count += 1
+                original = item.get('original_text', '')
+                text = f"[UNTRANSLATED] {original}"
+
             start = SubRipTime.from_string(item['start_time'])
             end = SubRipTime.from_string(item['end_time'])
             sub = SubRipItem(index=idx, start=start, end=end, text=text)
             subs.append(sub)
+
         subs.save(output_path, encoding='utf-8')
+
+        if untranslated_count > 0:
+            logger.warning(f"{STATUS_ICONS['warning']} {untranslated_count} subtitle(s) were not translated and are marked as [UNTRANSLATED]")

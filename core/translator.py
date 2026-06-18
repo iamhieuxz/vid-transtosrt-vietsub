@@ -97,11 +97,16 @@ class TranslatorService:
             return json.loads(repair_json(text))
         except Exception as e:
             logger.warning(f"json_repair failed: {e}")
-            # fallback non-greedy
-            match = re.search(r'\[.*?\]', text, re.DOTALL)
-            if match:
+            # fallback greedy: tìm JSON array LỚN NHẤT trong response
+            # dùng greedy để tránh khớp [] trống ở đầu
+            matches = re.findall(r'\[.*\]', text, re.DOTALL)
+            for match in reversed(matches):  # thử từ dài nhất -> ngắn nhất
                 try:
-                    return json.loads(match.group(0))
-                except:
+                    parsed = json.loads(match)
+                    if isinstance(parsed, list):
+                        logger.info(f"Fallback JSON extraction succeeded with {len(parsed)} items")
+                        return parsed
+                except Exception:
                     pass
+            logger.error("All JSON extraction methods failed")
             return None

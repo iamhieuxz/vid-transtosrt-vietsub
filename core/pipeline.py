@@ -2,6 +2,7 @@ import logging
 import re
 import time
 import os
+import threading
 from typing import List, Dict
 from concurrent.futures import ThreadPoolExecutor
 from rich.console import Console
@@ -26,6 +27,115 @@ STATUS_ICONS = {
     'processing': '[>>]'
 }
 
+# Prompt translations keyed by target language (English keys for easy extension)
+PROMPTS = {
+    'vi': {
+        'system': 'Ban la dich gia chuyen nghiep dich phu de tu {src} sang {tgt}.',
+        'glossary_hdr': 'THUAT NGŨ BUOC PHẢI DUNG:',
+        'history_hdr': 'CAC DONG TRƯỚC (da dich):',
+        'current_hdr': 'CAC DONG HIEN TAI (can dich):',
+        'next_hdr': 'CAC DONG TIEP THEO:',
+        'rules': (
+            'YEU CAU NGHIEM NGAT:\n'
+            '- Dich CHINH XAC {n} dong trong phan "HIEN TAI"\n'
+            '- MOI dong phai dich KHAC NHAU, khong lap lai noi dung\n'
+            '- KHONG lap lai cung mot cum tu hoac cau nhieu lan\n'
+            '- Tra ve dung JSON array voi {n} phan tu: [{{"id": sub_index, "text": "ban dich"}}, ...]\n'
+            '- KHONG them bat ky text nao khac, chi co JSON\n'
+            '- KHONG suy nghi truoc, tra loi ngay bang JSON\n'
+            '- Dung ngay sau dau ] cua JSON'
+        ),
+        'output': 'Output:',
+    },
+    'en': {
+        'system': 'You are a professional subtitle translator translating from {src} to {tgt}.',
+        'glossary_hdr': 'MANDATORY GLOSSARY:',
+        'history_hdr': 'PREVIOUS LINES (already translated):',
+        'current_hdr': 'CURRENT LINES (need translation):',
+        'next_hdr': 'NEXT LINES:',
+        'rules': (
+            'STRICT REQUIREMENTS:\n'
+            '- Translate EXACTLY {n} lines in the "CURRENT" section\n'
+            '- EACH line must be DIFFERENT, do not repeat content\n'
+            '- Do NOT repeat the same phrase or sentence multiple times\n'
+            '- Return EXACT JSON array with {n} elements: [{{"id": sub_index, "text": "translation"}}, ...]\n'
+            '- Do NOT add any other text, only JSON\n'
+            '- Do NOT think before answering, respond immediately with JSON\n'
+            '- Stop immediately after the ] of the JSON'
+        ),
+        'output': 'Output:',
+    },
+    'zh': {
+        'system': 'You are a professional subtitle translator translating from {src} to {tgt}.',
+        'glossary_hdr': 'MANDATORY GLOSSARY:',
+        'history_hdr': 'PREVIOUS LINES (already translated):',
+        'current_hdr': 'CURRENT LINES (need translation):',
+        'next_hdr': 'NEXT LINES:',
+        'rules': (
+            'STRICT REQUIREMENTS:\n'
+            '- Translate EXACTLY {n} lines in the "CURRENT" section\n'
+            '- EACH line must be DIFFERENT, do not repeat content\n'
+            '- Do NOT repeat the same phrase or sentence multiple times\n'
+            '- Return EXACT JSON array with {n} elements: [{{"id": sub_index, "text": "translation"}}, ...]\n'
+            '- Do NOT add any other text, only JSON\n'
+            '- Do NOT think before answering, respond immediately with JSON\n'
+            '- Stop immediately after the ] of the JSON'
+        ),
+        'output': 'Output:',
+    },
+    'ja': {
+        'system': 'You are a professional subtitle translator translating from {src} to {tgt}.',
+        'glossary_hdr': 'MANDATORY GLOSSARY:',
+        'history_hdr': 'PREVIOUS LINES (already translated):',
+        'current_hdr': 'CURRENT LINES (need translation):',
+        'next_hdr': 'NEXT LINES:',
+        'rules': (
+            'STRICT REQUIREMENTS:\n'
+            '- Translate EXACTLY {n} lines in the "CURRENT" section\n'
+            '- EACH line must be DIFFERENT, do not repeat content\n'
+            '- Do NOT repeat the same phrase or sentence multiple times\n'
+            '- Return EXACT JSON array with {n} elements: [{{"id": sub_index, "text": "translation"}}, ...]\n'
+            '- Do NOT add any other text, only JSON\n'
+            '- Do NOT think before answering, respond immediately with JSON\n'
+            '- Stop immediately after the ] of the JSON'
+        ),
+        'output': 'Output:',
+    },
+    'ko': {
+        'system': 'You are a professional subtitle translator translating from {src} to {tgt}.',
+        'glossary_hdr': 'MANDATORY GLOSSARY:',
+        'history_hdr': 'PREVIOUS LINES (already translated):',
+        'current_hdr': 'CURRENT LINES (need translation):',
+        'next_hdr': 'NEXT LINES:',
+        'rules': (
+            'STRICT REQUIREMENTS:\n'
+            '- Translate EXACTLY {n} lines in the "CURRENT" section\n'
+            '- EACH line must be DIFFERENT, do not repeat content\n'
+            '- Do NOT repeat the same phrase or sentence multiple times\n'
+            '- Return EXACT JSON array with {n} elements: [{{"id": sub_index, "text": "translation"}}, ...]\n'
+            '- Do NOT add any other text, only JSON\n'
+            '- Do NOT think before answering, respond immediately with JSON\n'
+            '- Stop immediately after the ] of the JSON'
+        ),
+        'output': 'Output:',
+    },
+}
+
+# Map target_lang name strings to prompt keys
+_LANG_KEY_MAP = {
+    'vietnamese': 'vi',
+    'english': 'en',
+    'chinese': 'zh',
+    'japanese': 'ja',
+    'korean': 'ko',
+}
+
+
+def _resolve_lang_key(lang_name: str) -> str:
+    """Resolve a language display name to a prompt key."""
+    key = _LANG_KEY_MAP.get(lang_name.lower(), None)
+    return key if key else 'en'  # default to English prompt
+
 
 class TranslationPipeline:
     def __init__(self, config: dict):
@@ -49,12 +159,29 @@ class TranslationPipeline:
         )
         self.exporter = Exporter(self.db)
         self.validator = Validator()
-        self.enable_glossary = config['pipeline'].get('enable_glossary', False)
+        self.enable_glossary = config.get('pipeline', {}).get('enable_glossary', True)
+        self.glossary_terms = self._load_glossary_terms(config)
         self.num_workers = config['pipeline'].get('num_workers', 1)
         self.checkpoint_interval = config['pipeline'].get('checkpoint_interval', 20)
         self.heartbeat_timeout = config['pipeline'].get('heartbeat_timeout', 600)
+        self._context_lock = threading.Lock()
+        self._db_write_lock = threading.Lock()
 
-    def run(self, project_id: int):
+    def _load_glossary_terms(self, config: dict) -> List[dict]:
+        """Load glossary from config.yaml."""
+        terms = []
+        for entry in config.get('glossary', []):
+            src = entry.get('source', '').strip()
+            tgt = entry.get('target', '').strip()
+            if src and tgt:
+                terms.append({
+                    'source_term': src,
+                    'target_term': tgt,
+                    'context_hint': entry.get('context', '').strip(),
+                })
+        return terms
+
+    def _get_glossary(self, project_id: int) -> List[dict]:
         project = self.db.get_project(project_id)
         if not project:
             logger.error(f"{STATUS_ICONS['error']} Project {project_id} not found")
@@ -141,6 +268,7 @@ class TranslationPipeline:
     def _process_sequential(self, project_id, project):
         total_items = self.db.get_all_items(project_id)
         total_windows = len(total_items) // project['window_size'] + (1 if len(total_items) % project['window_size'] else 0)
+        max_retries = self.config.get('pipeline', {}).get('max_retries', 3)
 
         completed = 0
         failed = 0
@@ -171,7 +299,6 @@ class TranslationPipeline:
                 win_id = task_info['id']
                 win_idx = task_info['window_index']
 
-                # Prevent infinite loop: if this window already failed all retries, skip it
                 if win_id in failed_windows:
                     logger.warning(f"{STATUS_ICONS['warning']} Window {win_idx} already exhausted retries, skipping")
                     break
@@ -187,10 +314,10 @@ class TranslationPipeline:
                     failed += 1
                     with self.db._get_connection() as conn:
                         row = conn.execute("SELECT retry_count FROM windows WHERE id=?", (win_id,)).fetchone()
-                    if row and row['retry_count'] >= 3:
+                    if row and row['retry_count'] >= max_retries:
                         failed_windows.add(win_id)
                         self.db.mark_task_dead(win_id, "Exhausted all retries")
-                        logger.error(f"{STATUS_ICONS['error']} Window {win_idx} exhausted all retries ({row['retry_count']}/3), moved to dead letter")
+                        logger.error(f"{STATUS_ICONS['error']} Window {win_idx} exhausted all retries ({row['retry_count']}/{max_retries}), moved to dead letter")
 
                 progress.update(task, advance=1)
                 progress.refresh()
@@ -198,8 +325,8 @@ class TranslationPipeline:
     def _process_parallel(self, project_id, project):
         total_items = self.db.get_all_items(project_id)
         total_windows = len(total_items) // project['window_size'] + (1 if len(total_items) % project['window_size'] else 0)
-        max_failures = config_max_failures = self.config.get('pipeline', {}).get('max_failures', 50) if isinstance(self.config.get('pipeline'), dict) else 50
-        consecutive_failures = 0
+        max_retries = self.config.get('pipeline', {}).get('max_retries', 3)
+        max_failures = self.config.get('pipeline', {}).get('max_failures', 50)
 
         with Progress(
             SpinnerColumn(),
@@ -252,7 +379,7 @@ class TranslationPipeline:
                             failed_cnt += 1
                             with self.db._get_connection() as conn:
                                 row = conn.execute("SELECT retry_count FROM windows WHERE id=?", (t_info['id'],)).fetchone()
-                            if row and row['retry_count'] >= 3:
+                            if row and row['retry_count'] >= max_retries:
                                 failed_windows.add(t_info['id'])
                                 self.db.mark_task_dead(t_info['id'], "Exhausted retries")
                         progress.update(task, advance=1, completed=completed_cnt)
@@ -268,8 +395,12 @@ class TranslationPipeline:
         start_sub = task['start_sub_index']
         end_sub = task['end_sub_index']
 
-        context = self._get_context(project_id, task['start_pos'], task['end_pos'], project, use_translated=use_translated_history)
-        result = self._translate_window(project_id, task, context, project)
+        # Lock context reads to prevent parallel workers from seeing partial translations
+        # from concurrently-running windows that haven't been committed yet
+        with self._context_lock:
+            context = self._get_context(project_id, task['start_pos'], task['end_pos'], project, use_translated=use_translated_history)
+            result = self._translate_window(project_id, task, context, project)
+
         if result:
             translations, source_lines = result
             if self.validator.validate_window_content(source_lines, translations):
@@ -326,7 +457,6 @@ class TranslationPipeline:
             json_data = self.translator.extract_json(raw)
             if json_data is None:
                 return None
-            # Pass list to preserve order
             if not self.validator.validate_json_translation(json_data, sub_indices):
                 return None
             mapping = {item['id']: item['text'] for item in json_data}
@@ -353,10 +483,38 @@ class TranslationPipeline:
         future = "\n".join([f"[{it['sub_index']}] {it['original_text']}" for it in fut_items]) if fut_items else ""
         return {"history": history, "future": future}
 
+    def _get_glossary(self, project_id: int) -> List[dict]:
+        """
+        Lấy glossary từ 2 nguồn: database (per-project) và config.yaml (global).
+        Config glossary được ưu tiên nếu enable_glossary=True.
+        """
+        all_terms = []
+
+        # 1. Config glossary (từ config.yaml) - luôn có nếu được bật
+        if self.enable_glossary and self.glossary_terms:
+            all_terms.extend(self.glossary_terms)
+
+        # 2. Database glossary (per-project, thêm tay trong CLI)
+        db_terms = self.db.get_glossary(project_id)
+        for t in db_terms:
+            if not any(existing['source_term'] == t['source_term'] for existing in all_terms):
+                all_terms.append({
+                    'source_term': t['source_term'],
+                    'target_term': t['target_term'],
+                    'context_hint': t.get('context_hint', ''),
+                })
+
+        return all_terms
+
     def _build_prompt(self, project, task, context):
+        src_lang = self.config['project']['source_lang']
+        tgt_lang = self.config['project']['target_lang']
+        p_key = _resolve_lang_key(tgt_lang)
+        p = PROMPTS[p_key]
+
         glossary = ""
         if self.enable_glossary:
-            terms = self.db.get_glossary(project['id'])
+            terms = self._get_glossary(project['id'])
             if terms:
                 glossary_lines = []
                 for t in terms:
@@ -364,35 +522,30 @@ class TranslationPipeline:
                     if t.get('context_hint'):
                         term_line += f" (context: {t['context_hint']})"
                     glossary_lines.append(term_line)
-                glossary = "THUẬT NGỮ BẮT BUỘC:\n" + "\n".join(glossary_lines) + "\n"
+                glossary = p['glossary_hdr'] + "\n" + "\n".join(glossary_lines) + "\n"
 
         num_lines = len([l for l in task['original_text'].split('\n') if l.strip()])
-        return f"""Bạn là dịch giả chuyên nghiệp dịch phụ đề từ {self.config['project']['source_lang']} sang {self.config['project']['target_lang']}.
 
-{glossary}CÁC DÒNG TRƯỚC (đã dịch):
+        return f"""{p['system'].format(src=src_lang, tgt=tgt_lang)}
+
+{glossary}{p['history_hdr']}
 {context['history']}
 
-CÁC DÒNG HIỆN TẠI (cần dịch):
+{p['current_hdr']}
 {task['original_text']}
 
-CÁC DÒNG TIẾP THEO:
+{p['next_hdr']}
 {context['future']}
 
-YÊU CẦU NGHIÊM NGẶT:
-- Dịch CHÍNH XÁC {num_lines} dòng trong phần "HIỆN TẠI"
-- MỖI dòng phải được dịch KHÁC NHAU, không lặp lại nội dung
-- KHÔNG lặp lại cùng một cụm từ hoặc câu nhiều lần
-- Trả về đúng JSON array với {num_lines} phần tử: [{{"id": sub_index, "text": "bản dịch"}}, ...]
-- KHÔNG thêm bất kỳ text nào khác, chỉ có JSON
-- KHÔNG suy nghĩ trước, trả lời ngay bằng JSON
-- Dừng ngay sau dấu ] của JSON
+{p['rules'].format(n=num_lines)}
 
-### Output:"""
+### {p['output']}"""
 
     def _save_to_tm(self, project, source_lines, translations):
         src_lang = self.config['project']['source_lang']
         tgt_lang = self.config['project']['target_lang']
         domain = project['name']
-        for s, t in zip(source_lines, translations):
-            if s.strip() and t.strip():
-                self.db.save_translation_memory(src_lang, tgt_lang, s, t, domain=domain, confidence=0.95, min_char_count=4)
+        with self._db_write_lock:
+            for s, t in zip(source_lines, translations):
+                if s.strip() and t.strip():
+                    self.db.save_translation_memory(src_lang, tgt_lang, s, t, domain=domain, confidence=0.95, min_char_count=4)

@@ -39,6 +39,10 @@ class Validator:
                 if ph not in trans:
                     logger.error(f"Missing placeholder '{ph}' in: {trans}")
                     return False
+            # Bắt cả 2 trường hợp: orig có nội dung nhưng trans trống, và cả 2 đều trống
+            if not orig.strip() and not trans.strip():
+                logger.error(f"Both empty for subtitle index")
+                return False
             if orig.strip() and not trans.strip():
                 logger.error(f"Empty translation for: {orig}")
                 return False

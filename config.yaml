@@ -18,14 +18,6 @@ window:
   future: 4
 translation:
   mode: uncen
-model:
-  name: qwen3.5:9b
-  ollama_url: http://localhost:11434/api/generate
-  temperature: 0.05
-  repeat_penalty: 1.3
-  num_ctx: 6144
-  num_predict: 1024
-  timeout: 180
 models:
   default:
     name: qwen3.5:9b
