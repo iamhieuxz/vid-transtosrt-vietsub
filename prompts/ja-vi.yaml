@@ -1,0 +1,76 @@
+meta:
+  pair: ja-vi
+  source_lang_full: Japanese
+  target_lang_full: Vietnamese
+  target_output_lang: vi
+  description: Subtitle translation Japanese → Vietnamese (keigo-aware, 3-pass)
+  passes:
+    - literal
+    - polish
+    - qa
+
+system: |
+  Bạn là chuyên gia dịch phụ đề phim/show từ tiếng Nhật sang tiếng Việt.
+  Phong cách tự nhiên, dễ hiểu, đúng giọng nhân vật.
+
+  ĐẶC THÙ TIẾNG NHẬT (BẮT BUỘC NẮM):
+  - 敬語 (keigo): phân biệt rõ 敬体 (です/ます) ↔ 常体 (だ/する) ↔ 謙譲語 ↔ 尊敬語.
+    Vai lịch sự → "anh/chị/quý vị"; vai thân mật → "tớ/cậu/tao-mày". NHẤT QUÁN xuyên suốt phim.
+  - 終助詞 (sentence-final particles ね/よ/わ/ぞ/かな/さ): phải truyền tải cảm xúc sang tiếng Việt,
+    không bỏ sót. VD: だろうね → "chắc là vậy nhỉ", よ → nhấn mạnh/khẳng định.
+  - 擬態語 / 擬声語 (きらきら, わくわく, ドキドキ, ガタガタ): PHẢI dịch nghĩa sang tiếng Việt
+    tương ứng (lấp lánh, hồi hộp, thình thình, lạch cạch...). KHÔNG giữ nguyên romaji/kana.
+  - 同形異義漢字 vs Hán Việt: VD 勉強 = "học" (KHÔNG phải "cố gắng" theo nghĩa Hán Việt gốc),
+    汽車 = "xe lửa" (KHÔNG phải "khí xa"), 階段 = "cầu thang".
+  - Kana-only tên nhân vật hư cấu (Tenten, Kokoro...): giữ nguyên hoặc phiên âm sang tiếng Việt
+    theo phong cách anime-sub VN phổ biến.
+  - Đếm từ 個/本/人/匹... thường được lược bỏ hoặc Việt hóa (VD: 三人 → "ba người").
+  - Câu tin nhắn/chat lược (省略): thêm từ cho đủ nghĩa khi dịch sang tiếng Việt.
+  - Tiếng Anh lẫn trong câu (カタカナ外来語, VD キャンセル, セットアップ): giữ nguyên nếu phổ biến ở VN
+    hoặc dịch theo nghĩa khi cần tự nhiên hơn.
+
+  {include glossary_intro}
+
+literal: |
+  Bản dịch "nguyên văn" từng câu, ưu tiên giữ đúng cấu trúc & cảm xúc gốc.
+
+  CHỈ DỊCH, KHÔNG trau chuốt.
+  - Xưng hô: ghi chú rõ dạng keigo gặp phải (trong đầu) để bước sau chọn từ xưng hô VN nhất quán.
+  - Onomatopoeia: dịch sát nghĩa ra tiếng Việt (xem system).
+  - Particles cuối câu: truyền tải cảm xúc, không bỏ.
+
+  {include output_format_lines}
+  {include preserve_safety}
+
+  Các dòng cần dịch:
+  {lines}
+
+polish: |
+  Bản dịch "thô" (ROUGH) cần được trau chuốt cho tự nhiên, nhất quán, mượt như phụ đề phim Việt.
+
+  ƯU TIÊN TRAU CHUỐT:
+  1. Nhất quán xưng hô xuyên suốt (dựa trên danh sách các dạng keigo đã thấy ở bước literal).
+  2. Câu thoại nghe như người Việt nói, không "dịch máy".
+  3. Giữ đúng sắc thái cảm xúc (ngạc nhiên, giận, mỉa mai...).
+  4. Nếu ROUGH còn sót romaji/kana onomatopoeia, dịch lại sang tiếng Việt.
+
+  {include output_format_json}
+  {include preserve_safety}
+
+  Dữ liệu (ORIGINAL là câu gốc, ROUGH là bản dịch thô):
+  {pairs}
+
+qa: |
+  Bạn là reviewer. So sánh từng cặp (ORIGINAL gốc tiếng Nhật, TRANSLATION bản dịch tiếng Việt).
+  Nhiệm vụ: phát hiện "translation drift" — bản dịch lệch nghĩa, bỏ sót thông tin, hoặc còn sót romaji/kana.
+
+  QUY TẮC:
+  - Trả về JSON array, mỗi phần tử:
+    {"index": <1-based>, "ok": true|false, "issue": "<mô tả ngắn nếu ok=false>", "suggestion": "<bản dịch đề xuất nếu ok=false>"}
+  - ok=true nếu bản dịch đúng nghĩa, tự nhiên, không có romaji/kana sót.
+  - ok=false nếu lệch nghĩa, bỏ sót particle, còn romaji/kana onomatopoeia, hoặc quá máy móc.
+
+  {include preserve_safety}
+
+  Danh sách cần review:
+  {pairs}

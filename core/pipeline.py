@@ -10,7 +10,7 @@ from rich.text import Text
 from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn, SpinnerColumn
 from rich.table import Table
 from .database import Database
-from .translator import TranslatorService
+from .translator import TranslatorService, _resolve_lang_pair as _resolve_pair_key
 from .exporter import Exporter, get_output_folder, get_output_paths, create_video_shortcut
 from .validator import Validator
 
@@ -516,7 +516,11 @@ class TranslationPipeline:
         tgt_lang = self.config['project']['target_lang']
 
         # Pass 1: standard JSON translation
-        prompt = self._build_prompt(project, task, context, glossary=glossary)
+        try:
+            prompt = self._build_prompt_yaml(project, task, context, glossary=glossary)
+        except Exception as e:
+            logger.debug(f"_build_prompt_yaml failed, using legacy: {e}")
+            prompt = self._build_prompt(project, task, context, glossary=glossary)
         try:
             raw = self.translator.generate(prompt, temperature=0.1)
             json_data = self.translator.extract_json(raw)
@@ -531,9 +535,14 @@ class TranslationPipeline:
         # Pass 2: fallback — chunk + simple prompt, no JSON
         logger.info(f"Window {task['window_index']}: using fallback translation ({len(source_lines)} lines)")
         try:
-            translations = self.translator.fallback_translate(
-                source_lines, src_lang, tgt_lang, glossary_terms=glossary
-            )
+            try:
+                translations = self.translator.fallback_translate_pair(
+                    source_lines, src_lang, tgt_lang, glossary_terms=glossary
+                )
+            except FileNotFoundError:
+                translations = self.translator.fallback_translate(
+                    source_lines, src_lang, tgt_lang, glossary_terms=glossary
+                )
             if translations is None:
                 logger.error(f"Window {task['window_index']}: fallback returned None")
                 return None
@@ -623,6 +632,71 @@ class TranslationPipeline:
 
 ### {p['output']}"""
 
+    def _build_prompt_yaml(self, project, task, context, glossary=None):
+        """Build the JSON-output prompt using prompts/<src>-<tgt>.yaml.
+
+        Falls back to the legacy ``_build_prompt`` dict-template if the pair
+        has no YAML file yet (e.g. a new target language was just added).
+        """
+        src_lang = self.config['project']['source_lang']
+        tgt_lang = self.config['project']['target_lang']
+
+        try:
+            pair = _resolve_pair_key(src_lang, tgt_lang)
+        except FileNotFoundError:
+            return self._build_prompt(project, task, context, glossary=glossary)
+
+        from prompts import registry
+        try:
+            ps = registry.get(pair)
+        except FileNotFoundError:
+            return self._build_prompt(project, task, context, glossary=glossary)
+
+        if glossary is None:
+            glossary = self._get_glossary(project['id']) if self.enable_glossary else []
+
+        glossary_block = ""
+        if glossary:
+            lines = []
+            for t in glossary:
+                line = f"- {t['source_term']} -> {t['target_term']}"
+                if t.get('context_hint'):
+                    line += f" (context: {t['context_hint']})"
+                lines.append(line)
+            glossary_block = "MANDATORY GLOSSARY:\n" + "\n".join(lines) + "\n"
+
+        system_text = ps.sections.get("system", "")
+
+        history_block = (
+            f"HISTORY (already translated, for context only):\n{context['history']}\n"
+            if context.get('history') else ""
+        )
+        future_block = (
+            f"NEXT LINES (not yet translated, for context only):\n{context['future']}\n"
+            if context.get('future') else ""
+        )
+
+        num_lines = len([l for l in task['original_text'].split('\n') if l.strip()])
+
+        rules_block = (
+            f"RULES:\n"
+            f"- Translate EVERY line below from {src_lang} → {tgt_lang}.\n"
+            f"- Use the GLOSSARY terms verbatim.\n"
+            f"- Output MUST be a JSON array of exactly {num_lines} objects:\n"
+            f'  [{{"id": <sub_index>, "text": "<translation>"}}, ...]\n'
+            f"- No commentary, no extra text, no markdown.\n"
+        )
+
+        return (
+            f"{system_text}\n\n"
+            f"{glossary_block}"
+            f"{history_block}"
+            f"{rules_block}"
+            f"### TASK\n{task['original_text']}\n\n"
+            f"{future_block}"
+            f"### OUTPUT (JSON array only)"
+        )
+
     def _save_to_tm(self, project, source_lines, translations):
         src_lang = self.config['project']['source_lang']
         tgt_lang = self.config['project']['target_lang']
@@ -695,16 +769,29 @@ class TranslationPipeline:
                 )
 
                 logger.info(f"Recovery[{dw['window_index']}]: pass-1 raw translate ({len(source_lines)} lines)")
-                raw_trans = self.translator.raw_translate(source_lines, src_lang, tgt_lang, glossary_terms=glossary)
+                try:
+                    raw_trans = self.translator.raw_translate_pair(
+                        source_lines, src_lang, tgt_lang, glossary_terms=glossary
+                    )
+                except FileNotFoundError:
+                    raw_trans = self.translator.raw_translate(
+                        source_lines, src_lang, tgt_lang, glossary_terms=glossary
+                    )
                 if raw_trans is None or len(raw_trans) != len(source_lines):
                     logger.error(f"Recovery[{dw['window_index']}]: raw_translate returned invalid result, skipping")
                     continue
 
                 logger.info(f"Recovery[{dw['window_index']}]: pass-2 polish translate")
-                polished = self.translator.polish_translate(
-                    source_lines, raw_trans, src_lang, tgt_lang,
-                    context_before=hist_trans, context_after=fut_src,
-                )
+                try:
+                    polished = self.translator.refine_pair(
+                        source_lines, raw_trans, src_lang, tgt_lang,
+                        glossary_terms=glossary,
+                    )
+                except FileNotFoundError:
+                    polished = self.translator.polish_translate(
+                        source_lines, raw_trans, src_lang, tgt_lang,
+                        context_before=hist_trans, context_after=fut_src,
+                    )
                 if polished is None:
                     polished = raw_trans  # fallback giữ nguyên rough
 
