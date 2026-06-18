@@ -544,7 +544,7 @@ def get_active_model_config(config):
     else:
         default_cfg = config.get('models', {}).get('default', {})
         return {
-            'name': default_cfg.get('name', 'qwen3.5:9b'),
+            'name': default_cfg.get('name', 'huihui_ai/hunyuan-mt-abliterated:7b-chimera'),
             'ollama_url': default_cfg.get('ollama_url', 'http://localhost:11434/api/generate'),
             'temperature': default_cfg.get('temperature', 0.05),
             'repeat_penalty': default_cfg.get('repeat_penalty', 1.15),

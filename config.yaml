@@ -7,11 +7,11 @@ whisper:
   vad_filter: true
   min_silence_duration_ms: 500
 project:
-  name: test5
+  name: test-31
   source_lang: Chinese
   target_lang: Vietnamese
-  input_srt: E:/trans-video/test4.mp4
-  output_srt: E:/trans-video/test5.srt
+  input_srt: E:/trans-video/test3.mp4
+  output_srt: E:/trans-video
 window:
   size: 10
   history: 12
@@ -20,7 +20,7 @@ translation:
   mode: uncen
 models:
   default:
-    name: qwen3.5:9b
+    name: huihui_ai/hunyuan-mt-abliterated:7b-chimera
     ollama_url: http://localhost:11434/api/generate
     temperature: 0.05
     repeat_penalty: 1.3
