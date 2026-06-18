@@ -6,15 +6,15 @@ import logging
 import tempfile
 from tqdm import tqdm
 
-# Force CUDA DLLs from pip packages (fixes cublas64_12.dll not found on Windows)
-_venv_site = r"F:\subtitle-trans\.venv\Lib\site-packages"
+# Fix cublas64_12.dll not found: prepend DLL paths to PATH before loading faster-whisper
+_venv_site = os.getenv('VIRTUAL_ENV', r'F:\subtitle-trans\.venv')
 _nvidia_dll_paths = [
-    os.path.join(_venv_site, "nvidia", "cublas", "bin"),
-    os.path.join(_venv_site, "nvidia", "cuda_nvrtc", "bin"),
-    os.path.join(_venv_site, "nvidia", "cublas", "lib", "x64"),
+    os.path.join(_venv_site, "Lib", "site-packages", "nvidia", "cublas", "bin"),
+    os.path.join(_venv_site, "Lib", "site-packages", "nvidia", "cuda_nvrtc", "bin"),
 ]
 for _p in _nvidia_dll_paths:
     if os.path.exists(_p) and _p not in os.environ.get('PATH', ''):
+        os.environ['PATH'] = _p + os.pathsep + os.environ.get('PATH', '')
         try:
             os.add_dll_directory(_p)
         except Exception:
