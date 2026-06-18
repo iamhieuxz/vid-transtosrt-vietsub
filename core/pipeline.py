@@ -31,8 +31,8 @@ STATUS_ICONS = {
 PROMPTS = {
     'vi': {
         'system': (
-            'Ban la mot dich gia phu de chuyen nghiep, dac biet gioi ve dich phim/truyen tu tieng Trung (chu Han) sang Tieng Viet.'
-            ' Ban thong thao van hoc, ngon ngu, van hoa va tieng long Trung Quoc.'
+            'Bạn là dịch giả phụ đề chuyên nghiệp, chuyên dịch từ {src} sang {tgt}.'
+            ' Bạn thông thạo văn học, ngôn ngữ, văn hóa và tiếng lóng Trung Quốc.'
         ),
         'glossary_hdr': 'THUAT NGU BUOC PHAI GIU NGUYEN:',
         'history_hdr': 'CAC DONG TRUOC (da dich xong):',
@@ -287,6 +287,7 @@ class TranslationPipeline:
         total_items = self.db.get_all_items(project_id)
         total_windows = len(total_items) // project['window_size'] + (1 if len(total_items) % project['window_size'] else 0)
         max_retries = self.config.get('pipeline', {}).get('max_retries', 3)
+        max_failures = self.config.get('pipeline', {}).get('max_failures', 50)
 
         completed = 0
         failed = 0
@@ -341,6 +342,10 @@ class TranslationPipeline:
 
                 progress.update(task, advance=1)
                 progress.refresh()
+
+                if failed > 0 and failed >= max_failures and completed == 0:
+                    logger.error(f"Aborting: {failed} consecutive failures with 0 success")
+                    break
 
     def _process_parallel(self, project_id, project):
         total_items = self.db.get_all_items(project_id)
@@ -552,9 +557,11 @@ class TranslationPipeline:
         p_key = _resolve_lang_key(tgt_lang)
         p = PROMPTS[p_key]
 
-        glossary_block = ""
+        # glossary already passed in from _translate_window, no need to reload
         if glossary is None:
             glossary = self._get_glossary(project['id']) if self.enable_glossary else []
+
+        glossary_block = ""
         if glossary:
             glossary_lines = []
             for t in glossary:
