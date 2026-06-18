@@ -30,11 +30,14 @@ STATUS_ICONS = {
 # Prompt translations keyed by target language (English keys for easy extension)
 PROMPTS = {
     'vi': {
-        'system': 'Ban la dich gia chuyen nghiep dich phu de tu {src} sang {tgt}.',
-        'glossary_hdr': 'THUAT NGŨ BUOC PHẢI DUNG:',
-        'history_hdr': 'CAC DONG TRƯỚC (da dich):',
+        'system': (
+            'Ban la mot dich gia phu de chuyen nghiep, dac biet gioi ve dich phim/truyen tu tieng Trung (chu Han) sang Tieng Viet.'
+            ' Ban thong thao van hoc, ngon ngu, van hoa va tieng long Trung Quoc.'
+        ),
+        'glossary_hdr': 'THUAT NGU BUOC PHAI GIU NGUYEN:',
+        'history_hdr': 'CAC DONG TRUOC (da dich xong):',
         'current_hdr': 'CAC DONG HIEN TAI (can dich):',
-        'next_hdr': 'CAC DONG TIEP THEO:',
+        'next_hdr': 'CAC DONG TIEP THEO (nguon goc):',
         'rules': (
             'YEU CAU NGHIEM NGAT:\n'
             '- Dich CHINH XAC {n} dong trong phan "HIEN TAI"\n'
@@ -43,7 +46,14 @@ PROMPTS = {
             '- Tra ve dung JSON array voi {n} phan tu: [{{"id": sub_index, "text": "ban dich"}}, ...]\n'
             '- KHONG them bat ky text nao khac, chi co JSON\n'
             '- KHONG suy nghi truoc, tra loi ngay bang JSON\n'
-            '- Dung ngay sau dau ] cua JSON'
+            '- Dung ngay sau dau ] cua JSON\n\n'
+            'LU Y DAC BIET VOI TIENG TRUNG:\n'
+            '- Ten rieng, ten nhan vat, ten dia diem: giu nguyen hoac transliterate\n'
+            '- Thanh ngu (成语 chengyu): dich theo Y NGHIA, khong theo Tung le\n'
+            '- Binh luan man hinh / ghi chu: dich CO NGU CANG, phu hop voi ngon ngu thoai mai\n'
+            '- Tieng long / meme Trung Quoc: tim tu Viet tuong duong, khong ghep may\n'
+            '- Neu dong chua co gi hoac chi la tieng viet: giu nguyen\n'
+            '- Do dai moi dong dich: gan bang do dai goc, phu hop de doc phu de'
         ),
         'output': 'Output:',
     },
@@ -309,7 +319,9 @@ class TranslationPipeline:
 
                 if win_id in failed_windows:
                     logger.warning(f"{STATUS_ICONS['warning']} Window {win_idx} already exhausted retries, skipping")
-                    break
+                    progress.update(task, advance=1)
+                    progress.refresh()
+                    continue
 
                 success = self._process_single_task(project_id, task_info, project, use_translated_history=True)
                 if success:
@@ -362,7 +374,7 @@ class TranslationPipeline:
                             if win_id in failed_windows:
                                 self.db.mark_task_dead(win_id, "Exhausted retries")
                                 continue
-                            future = executor.submit(self._process_single_task, project_id, task_info, project, False)
+                            future = executor.submit(self._process_single_task, project_id, task_info, project, True)
                             futures[future] = task_info
                             idle_rounds = 0
                         elif not futures:
@@ -464,7 +476,7 @@ class TranslationPipeline:
         tgt_lang = self.config['project']['target_lang']
 
         # Pass 1: standard JSON translation
-        prompt = self._build_prompt(project, task, context)
+        prompt = self._build_prompt(project, task, context, glossary=glossary)
         try:
             raw = self.translator.generate(prompt, temperature=0.1)
             json_data = self.translator.extract_json(raw)
@@ -534,29 +546,29 @@ class TranslationPipeline:
 
         return all_terms
 
-    def _build_prompt(self, project, task, context):
+    def _build_prompt(self, project, task, context, glossary=None):
         src_lang = self.config['project']['source_lang']
         tgt_lang = self.config['project']['target_lang']
         p_key = _resolve_lang_key(tgt_lang)
         p = PROMPTS[p_key]
 
-        glossary = ""
-        if self.enable_glossary:
-            terms = self._get_glossary(project['id'])
-            if terms:
-                glossary_lines = []
-                for t in terms:
-                    term_line = f"- {t['source_term']} -> {t['target_term']}"
-                    if t.get('context_hint'):
-                        term_line += f" (context: {t['context_hint']})"
-                    glossary_lines.append(term_line)
-                glossary = p['glossary_hdr'] + "\n" + "\n".join(glossary_lines) + "\n"
+        glossary_block = ""
+        if glossary is None:
+            glossary = self._get_glossary(project['id']) if self.enable_glossary else []
+        if glossary:
+            glossary_lines = []
+            for t in glossary:
+                term_line = f"- {t['source_term']} -> {t['target_term']}"
+                if t.get('context_hint'):
+                    term_line += f" (context: {t['context_hint']})"
+                glossary_lines.append(term_line)
+            glossary_block = p['glossary_hdr'] + "\n" + "\n".join(glossary_lines) + "\n"
 
         num_lines = len([l for l in task['original_text'].split('\n') if l.strip()])
 
         return f"""{p['system'].format(src=src_lang, tgt=tgt_lang)}
 
-{glossary}{p['history_hdr']}
+{glossary_block}{p['history_hdr']}
 {context['history']}
 
 {p['current_hdr']}
@@ -599,7 +611,7 @@ class TranslationPipeline:
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
             BarColumn(),
-            TextColumn("[progress.percentage]{3.0f}%"),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
             TimeRemainingColumn(),
             console=console,
         ) as progress:
