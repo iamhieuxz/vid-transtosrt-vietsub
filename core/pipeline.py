@@ -181,7 +181,8 @@ class TranslationPipeline:
                 })
         return terms
 
-    def _get_glossary(self, project_id: int) -> List[dict]:
+    def run(self, project_id: int):
+        """Run the full translation pipeline for a project."""
         project = self.db.get_project(project_id)
         if not project:
             logger.error(f"{STATUS_ICONS['error']} Project {project_id} not found")
