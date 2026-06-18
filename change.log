@@ -75,3 +75,30 @@ Tất cả thay đổi đáng chú ý của dự án sẽ được ghi vào file
 | 13 | P2 | Verbose/quiet flag | `main.py` | ⏳ TODO |
 | 14 | P2 | recover_stuck_tasks retry accumulation | `database.py` | ⏳ TODO |
 | 15 | P2 | Unittest cho validator/db/translator | `tests/` | ⏳ TODO |
+
+## [Unreleased] - 2026-06-18
+
+### JA 2-tier context pipeline (Worker A + Worker C)
+
+- **[ADD] `core/database.py` — bảng `window_contexts`.** Lưu context summary cho từng context-window (mặc định 20 dòng source). Schema: `speakers_json, pronouns_map, tone, setting, summary, status`. Có index `idx_ctx_project` cho query nhanh.
+- **[ADD] `core/ja_context_analyzer.py` — Worker A.** Chia toàn bộ SRT thành context-window 20 dòng → gọi model 1 lần/window để trích xuất speakers/pronouns_map/tone/setting/summary → lưu vào DB. Cache: nếu context-window đã completed thì skip. Cùng model với main pipeline (không cần thêm VRAM).
+- **[ADD] `core/ja_translator.py` — inject context vào polish & QA.** `_POLISH_TEMPLATE` và `_QA_TEMPLATE` nhận block `{context_block}` chứa speakers/pronouns_map/tone/setting/summary. Helper `_render_context()` chuyển dict → block prompt. Nếu context=None → fallback về baseline 3-pass.
+- **[ADD] `core/pipeline.py` — wire Worker A vào `run()`.** Sau khi `_create_windows` + `recover_stuck_tasks`, nếu `ja_context_analyzer is not None` thì chạy preprocessing phase. Tuần tự (sequential_first theo thống nhất với user). Nếu 0 context OK → cảnh báo nhưng vẫn chạy baseline 3-pass.
+- **[ADD] `core/pipeline.py` — Worker C scene-40 review.** Sau khi main pipeline + recovery dead letters xong, gom các translation-window thành scene 40 dòng. Với mỗi scene, gọi `ja_translator.qa_review()` với context tương ứng → auto-fix các dòng `ok=false` có `suggestion` hợp lệ (validate bằng `Validator.validate_window_content` trước khi update DB).
+- **[ADD] `core/pipeline.py` — `_get_ja_context_for_window(task, project_id)`.** Tính `context_window_index = start_pos // context_window_size` → query `window_contexts` → trả dict context. Nếu status≠'completed' hoặc không tìm thấy → trả None (fallback 3-pass).
+- **[MOD] `core/pipeline.py` — JA recovery dùng context.** Trong `_recover_dead_letters`, nhánh JA cũng query context từ Worker A và inject vào polish + QA.
+- **[ADD] `config.yaml` — block `ja_context`.** `window_size: 20` (context-window), `scene_review_size: 40` (Worker C review). Có thể config theo phim.
+
+### Workflow 2-tier (tóm tắt)
+
+1. **Preprocessing (Worker A, sequential)**: Chia SRT thành 20-dòng context-window → gọi model tóm tắt context (speakers, pronouns_map, tone, setting) → lưu vào `window_contexts`. Cache vĩnh viễn trong DB.
+2. **Main pipeline (Worker B, sequential/parallel)**: Với mỗi translation-window, query context của context-window chứa nó → inject vào prompt polish + QA → dịch 3-pass như cũ. Fallback về baseline 3-pass nếu context=None.
+3. **Scene review (Worker C, sequential)**: Sau khi main xong, gom 40 dòng thành scene → gọi QA pass với context → auto-fix các dòng inconsistent.
+
+### Khả thi trên phần cứng
+
+- Chỉ dùng 1 model (qwen3-abliterated 8b) — không cần thêm VRAM.
+- Worker A: 1 call model / 20 dòng → ~1-3 giây / window → rất nhanh.
+- Worker C: 1 call model / 40 dòng → ~2-5 giây / scene → cũng nhanh.
+- Cache DB: resume project đã có context → skip Worker A hoàn toàn.
+- Timeout 30s cho context (nếu Worker A chậm) → fallback 3-pass.

@@ -2,18 +2,18 @@ whisper:
   model_size: large-v3-turbo
   device: cuda
   compute_type: float16
-  language: zh
+  language: ja
   beam_size: 5
   vad_filter: true
   min_silence_duration_ms: 500
 project:
-  name: test-model
-  source_lang: Chinese
+  name: NSFS-482
+  source_lang: Japanese
   target_lang: Vietnamese
-  input_srt: E:/trans-video/trans-video.mp4
-  output_srt: E:/trans-video
+  input_srt: E:/HIDE/JAV/482/NSFS-482-video-VN.mp4
+  output_srt: E:/HIDE/JAV/482
 window:
-  size: 10
+  size: 6
   history: 12
   future: 4
 translation:
@@ -36,8 +36,6 @@ models:
     num_predict: 1024
     timeout: 180
   ja:
-    # Model riêng cho Japanese (keigo-aware, 3-pass)
-    # Hiện dùng chung qwen3 vì đang là model duy nhất trong hệ thống
     name: huihui_ai/qwen3-abliterated:8b-v2
     ollama_url: http://localhost:11434/api/generate
     temperature: 0.1
@@ -54,3 +52,14 @@ pipeline:
   heartbeat_timeout: 600
   circuit_breaker_threshold: 5
   circuit_breaker_cooldown: 60
+model:
+  name: huihui_ai/qwen3-abliterated:8b-v2
+  ollama_url: http://localhost:11434/api/generate
+  temperature: 0.05
+  repeat_penalty: 1.3
+  num_ctx: 6144
+  num_predict: 1024
+  timeout: 180
+ja_context:
+  window_size: 20
+  scene_review_size: 40

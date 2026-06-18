@@ -187,6 +187,7 @@ class TranslationPipeline:
 
         # Optional Japanese 3-pass translator (chỉ kích hoạt khi source_lang là JA)
         self.ja_translator = None
+        self.ja_context_analyzer = None
         if _is_japanese(config.get('project', {}).get('source_lang', '')):
             try:
                 from .ja_translator import JaTranslator
@@ -198,6 +199,18 @@ class TranslationPipeline:
             except Exception as e:
                 logger.warning(f"Failed to init JaTranslator: {e}, falling back to standard pipeline")
                 self.ja_translator = None
+            # 2-tier: Worker A (context analyzer) chạy preprocessing
+            if self.ja_translator is not None:
+                try:
+                    from .ja_context_analyzer import JaContextAnalyzer
+                    self.ja_context_analyzer = JaContextAnalyzer(
+                        self.translator,
+                        context_window_size=config.get('ja_context', {}).get('window_size', 20),
+                    )
+                    logger.info("JaContextAnalyzer (Worker A, 2-tier) enabled")
+                except Exception as e:
+                    logger.warning(f"Failed to init JaContextAnalyzer: {e}, 2-tier disabled")
+                    self.ja_context_analyzer = None
 
     def _load_glossary_terms(self, config: dict) -> List[dict]:
         """Load glossary from config.yaml."""
@@ -230,6 +243,22 @@ class TranslationPipeline:
         self._create_windows(project_id, project)
         self.db.recover_stuck_tasks(project_id, self.heartbeat_timeout)
 
+        # 2-tier: Worker A phân tích ngữ cảnh toàn phim TRƯỚC khi pipeline main chạy
+        # Tuần tự theo thống nhất với user (sequential_first)
+        if self.ja_context_analyzer is not None:
+            console.print(f"{STATUS_ICONS['start']} [cyan]Worker A: analyzing context windows...[/cyan]")
+            stats = self.ja_context_analyzer.analyze_project(project_id, self.db)
+            console.print(
+                f"{STATUS_ICONS['success']} Context analysis: "
+                f"{stats['completed']}/{stats['total']} OK, {stats['failed']} failed"
+            )
+            # Nếu 0 context-window OK → cảnh báo nhưng vẫn chạy (fallback 3-pass)
+            if stats['completed'] == 0 and stats['total'] > 0:
+                console.print(
+                    f"{STATUS_ICONS['warning']} [yellow]No context available, "
+                    f"running baseline 3-pass without xưng hô mapping[/yellow]"
+                )
+
         console.print(f"{STATUS_ICONS['processing']} [cyan]Processing translation queue...[/cyan]")
         if self.num_workers > 1:
             console.print(f"{STATUS_ICONS['warning']} [yellow]Parallel mode may reduce consistency[/yellow]")
@@ -245,6 +274,10 @@ class TranslationPipeline:
             recovered = self._recover_dead_letters(project_id, project)
             # Re-count after recovery
             dead = self.db.count_dead_letter(project_id)
+
+        # 2-tier: Worker C (scene-40 review) - auto-fix keigo/xưng hô inconsistency
+        if self.ja_translator is not None:
+            self._worker_c_scene_review(project_id, project)
 
         if dead > 0:
             self.db.update_project_status(project_id, 'completed_with_errors')
@@ -540,7 +573,7 @@ class TranslationPipeline:
         # Japanese 3-pass: literal -> polish -> qa (keigo-aware)
         if self.ja_translator is not None:
             return self._translate_window_ja(
-                task, source_lines, sub_indices, glossary,
+                task, source_lines, sub_indices, glossary, project_id,
             )
 
         # Pass 1: standard JSON translation
@@ -574,12 +607,17 @@ class TranslationPipeline:
             logger.error(f"Window {task['window_index']}: fallback exception: {e}")
             return None
 
-    def _translate_window_ja(self, task, source_lines, sub_indices, glossary):
-        """Luồng dịch riêng cho tiếng Nhật: 3-pass (literal → polish → qa).
+    def _translate_window_ja(self, task, source_lines, sub_indices, glossary, project_id):
+        """Luồng dịch riêng cho tiếng Nhật: 3-pass (literal → polish → qa)
+        + 2-tier context (inject từ Worker A) + Worker C scene-review.
 
         Trả về (translations, source_lines) giống _translate_window thường.
         """
         from .ja_translator import JaTranslator  # noqa: F401
+        import json
+
+        # Lấy context cho window hiện tại (2-tier)
+        context_summary = self._get_ja_context_for_window(task, project_id)
 
         # Pass 1: literal
         rough = self.ja_translator.literal_translate(
@@ -595,9 +633,10 @@ class TranslationPipeline:
             )
             rough = (rough + source_lines)[:len(source_lines)]
 
-        # Pass 2: polish
+        # Pass 2: polish (có inject context nếu có)
         polished = self.ja_translator.polish_translate(
             source_lines, rough, glossary_terms=glossary,
+            context_summary=context_summary,
         )
         if len(polished) != len(source_lines):
             polished = (polished + source_lines)[:len(source_lines)]
@@ -606,6 +645,7 @@ class TranslationPipeline:
         try:
             qa = self.ja_translator.qa_review(
                 source_lines, polished, glossary_terms=glossary,
+                context_summary=context_summary,
             )
             final = self.ja_translator.apply_qa_results(polished, qa)
         except Exception as e:
@@ -628,9 +668,35 @@ class TranslationPipeline:
 
         logger.info(
             f"Window {task['window_index']}: JA 3-pass OK "
-            f"({len(final)} lines, qa_issues={sum(1 for x in (qa or []) if not x.get('ok'))})"
+            f"({len(final)} lines, qa_issues={sum(1 for x in (qa or []) if not x.get('ok'))}, "
+            f"context={'yes' if context_summary else 'no'})"
         )
         return final, source_lines
+
+    def _get_ja_context_for_window(self, task, project_id):
+        """Lấy context từ bảng window_contexts cho translation-window hiện tại.
+
+        Trả về dict {speakers, pronouns_map, tone, setting, summary} hoặc None.
+        """
+        try:
+            ctx_window_size = self.ja_context_analyzer.context_window_size
+            start_pos = task.get('start_pos', 0)
+            # start_pos của translation-window -> context_window_index
+            ctx_idx = start_pos // ctx_window_size
+            ctx = self.db.get_window_context(project_id, ctx_idx)
+            if not ctx or ctx.get("status") != "completed":
+                return None
+            import json as _json
+            return {
+                "speakers": _json.loads(ctx.get("speakers_json") or "[]"),
+                "pronouns_map": _json.loads(ctx.get("pronouns_map") or "{}"),
+                "tone": ctx.get("tone", "unknown"),
+                "setting": ctx.get("setting", "unknown"),
+                "summary": ctx.get("summary", ""),
+            }
+        except Exception as e:
+            logger.debug(f"_get_ja_context_for_window: {e}")
+            return None
 
     def _get_context(self, project_id, start_pos, end_pos, project, use_translated=False):
         items = self.db.get_all_items(project_id)
@@ -784,6 +850,19 @@ class TranslationPipeline:
 
                 # Japanese 3-pass recovery (keigo-aware)
                 if self.ja_translator is not None:
+                    # Lấy context từ Worker A (2-tier)
+                    ctx_summary = None
+                    if self.ja_context_analyzer is not None:
+                        ctx_row = self.db.get_context_for_pos(project_id, dw.get('start_pos', 0))
+                        if ctx_row and ctx_row.get("status") == "completed":
+                            import json as _json
+                            ctx_summary = {
+                                "speakers": _json.loads(ctx_row.get("speakers_json") or "[]"),
+                                "pronouns_map": _json.loads(ctx_row.get("pronouns_map") or "{}"),
+                                "tone": ctx_row.get("tone", "unknown"),
+                                "setting": ctx_row.get("setting", "unknown"),
+                                "summary": ctx_row.get("summary", ""),
+                            }
                     rough = self.ja_translator.literal_translate(
                         source_lines, glossary_terms=glossary,
                     )
@@ -792,12 +871,14 @@ class TranslationPipeline:
                         continue
                     polished = self.ja_translator.polish_translate(
                         source_lines, rough, glossary_terms=glossary,
+                        context_summary=ctx_summary,
                     )
                     if len(polished) != len(source_lines):
                         polished = (polished + source_lines)[:len(source_lines)]
                     try:
                         qa = self.ja_translator.qa_review(
                             source_lines, polished, glossary_terms=glossary,
+                            context_summary=ctx_summary,
                         )
                         polished = self.ja_translator.apply_qa_results(polished, qa)
                     except Exception:
@@ -836,3 +917,131 @@ class TranslationPipeline:
 
         console.print(f"{STATUS_ICONS['success']} [green]Recovered {recovered}/{len(dead_windows)} dead windows[/green]")
         return recovered
+
+    def _worker_c_scene_review(self, project_id, project):
+        """Worker C: review scene-40 (4 translation-windows liên tiếp) và auto-fix
+        các inconsistency về keigo/xưng hô.
+
+        Chạy SAU khi main pipeline xong. Tự động update DB với suggestion
+        từ model (auto-fix theo thống nhất với user).
+        """
+        import json as _json
+
+        all_items = self.db.get_all_items(project_id)
+        if not all_items:
+            return
+
+        win_size = project['window_size']
+        scene_window_size = self.config.get('ja_context', {}).get('scene_review_size', 40)
+
+        # Gom translation-windows thành scene
+        scenes = []
+        cur_scene = []
+        for it in all_items:
+            cur_scene.append(it)
+            if len(cur_scene) >= scene_window_size:
+                scenes.append(cur_scene)
+                cur_scene = []
+        if cur_scene:
+            scenes.append(cur_scene)
+
+        if not scenes:
+            return
+
+        console.print(
+            f"{STATUS_ICONS['start']} [cyan]Worker C: scene review "
+            f"({len(scenes)} scenes of {scene_window_size} lines)...[/cyan]"
+        )
+
+        glossary = self._get_glossary(project_id) if self.enable_glossary else []
+        total_fixed = 0
+
+        for scene_idx, scene_items in enumerate(scenes):
+            # Lấy context của scene này (Worker A đã tạo)
+            start_pos = scene_items[0].get('id', 0) - 1  # pos = id - 1 trong schema
+            # Tính pos dựa trên thứ tự: items đã sort theo sub_index
+            # An toàn hơn: dùng chỉ số trong list
+            # (giả định all_items đã sort theo sub_index)
+            # start_pos = chỉ số của item đầu tiên
+            try:
+                first_sub = scene_items[0]['sub_index']
+                # Tìm pos = chỉ số item trong all_items
+                pos = next(
+                    i for i, it in enumerate(all_items) if it['sub_index'] == first_sub
+                )
+            except Exception:
+                pos = 0
+            ctx = self.db.get_context_for_pos(project_id, pos)
+            context_summary = None
+            if ctx and ctx.get("status") == "completed":
+                context_summary = {
+                    "speakers": _json.loads(ctx.get("speakers_json") or "[]"),
+                    "pronouns_map": _json.loads(ctx.get("pronouns_map") or "{}"),
+                    "tone": ctx.get("tone", "unknown"),
+                    "setting": ctx.get("setting", "unknown"),
+                    "summary": ctx.get("summary", ""),
+                }
+
+            # Gom source + translation
+            sources = [it['original_text'] for it in scene_items if it.get('translated_text')]
+            translations = [it['translated_text'] for it in scene_items if it.get('translated_text')]
+            if not sources:
+                continue
+            if len(sources) != len(translations):
+                continue
+
+            # Gọi QA pass (Worker C dùng lại ja_translator.qa_review)
+            try:
+                qa = self.ja_translator.qa_review(
+                    sources, translations, glossary_terms=glossary,
+                    context_summary=context_summary,
+                )
+            except Exception as e:
+                logger.warning(f"Worker C scene {scene_idx} QA failed: {e}")
+                continue
+
+            # Auto-fix: tìm các dòng ok=false có suggestion → update DB
+            fixed_in_scene = 0
+            for item in qa:
+                if item.get("ok", True):
+                    continue
+                idx = item.get("index", 0) - 1
+                suggestion = (item.get("suggestion") or "").strip()
+                if not (0 <= idx < len(scene_items)) or not suggestion:
+                    continue
+                target_item = scene_items[idx]
+                if not target_item.get('translated_text'):
+                    continue
+                # Validate suggestion không rỗng / quá khác
+                old = target_item['translated_text']
+                if not self.validator.validate_window_content(
+                    [target_item['original_text']], [suggestion]
+                ):
+                    logger.debug(
+                        f"Worker C scene {scene_idx} idx {idx+1}: "
+                        f"suggestion failed validation, skipping"
+                    )
+                    continue
+                # Update DB
+                with self.db._get_connection() as conn:
+                    conn.execute(
+                        "UPDATE subtitle_items SET translated_text=? WHERE id=?",
+                        (suggestion, target_item['id'])
+                    )
+                    conn.commit()
+                fixed_in_scene += 1
+                logger.info(
+                    f"Worker C scene {scene_idx} auto-fix sub {target_item['sub_index']}: "
+                    f"'{old[:30]}...' -> '{suggestion[:30]}...'"
+                )
+
+            if fixed_in_scene:
+                total_fixed += fixed_in_scene
+                logger.info(
+                    f"Worker C scene {scene_idx}: fixed {fixed_in_scene} lines"
+                )
+
+        console.print(
+            f"{STATUS_ICONS['success']} [green]Worker C: auto-fixed {total_fixed} lines "
+            f"across {len(scenes)} scenes[/green]"
+        )
