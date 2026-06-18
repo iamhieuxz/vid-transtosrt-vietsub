@@ -11,7 +11,7 @@ from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn, 
 from rich.table import Table
 from .database import Database
 from .translator import TranslatorService
-from .exporter import Exporter
+from .exporter import Exporter, get_output_folder, get_output_paths, create_video_shortcut
 from .validator import Validator
 
 logger = logging.getLogger(__name__)
@@ -231,9 +231,44 @@ class TranslationPipeline:
         else:
             self.db.update_project_status(project_id, 'partial')
 
-        self.exporter.export(project_id, project['output_srt'])
+        # Export to output folder with project name
+        self._export_to_folder(project_id, project)
+
         self._print_summary(project_id, pending, dead)
         console.print(f"\n{STATUS_ICONS['complete']} [green]Pipeline finished successfully![/green]")
+
+    def _export_to_folder(self, project_id: int, project: dict):
+        """
+        Export files vào folder output theo cấu trúc:
+        <output_base>/<project_name>/
+          ├── <project_name>.lnk     (shortcut đến video gốc)
+          ├── <name>-origin.srt     (file SRT nguồn)
+          └── <name>.srt            (file SRT đích)
+        """
+        project_name = project['name']
+        base_output_path = project['output_srt']
+        original_video_path = project.get('original_video_path')
+
+        # Tạo folder và lấy đường dẫn các file
+        paths = get_output_paths(base_output_path, project_name)
+
+        console.print(f"\n{STATUS_ICONS['start']} [cyan]Exporting to folder:[/cyan] {paths['folder']}")
+
+        # Export file SRT đích (đã dịch)
+        self.exporter.export(project_id, paths['translated'])
+
+        # Export file SRT gốc (chưa dịch)
+        self.exporter.export_original(project_id, paths['original'])
+
+        # Tạo shortcut đến video gốc
+        if original_video_path and os.path.exists(original_video_path):
+            shortcut_path = create_video_shortcut(original_video_path, paths['folder'], project_name)
+            if shortcut_path:
+                console.print(f"{STATUS_ICONS['success']} [green]Video shortcut:[/green] {shortcut_path}")
+            else:
+                console.print(f"{STATUS_ICONS['warning']} [yellow]Could not create video shortcut[/yellow]")
+        else:
+            console.print(f"{STATUS_ICONS['warning']} [yellow]Original video not available for shortcut[/yellow]")
 
     def _print_summary(self, project_id: int, pending: int, dead: int):
         """In bang tom tat ket qua."""

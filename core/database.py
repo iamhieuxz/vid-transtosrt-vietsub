@@ -23,7 +23,7 @@ class Database:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT UNIQUE,
             source_lang TEXT, target_lang TEXT,
-            input_srt TEXT, output_srt TEXT,
+            input_srt TEXT, output_srt TEXT, original_video_path TEXT,
             status TEXT DEFAULT 'pending',
             total_lines INTEGER DEFAULT 0,
             window_size INTEGER DEFAULT 8,
@@ -85,12 +85,12 @@ class Database:
 
     # --- Projects ---
     def create_project(self, name, source_lang, target_lang, input_srt, output_srt,
-                       window_size=8, history_size=8, future_size=2):
+                       window_size=8, history_size=8, future_size=2, original_video_path=None):
         with self._get_connection() as conn:
             c = conn.cursor()
             c.execute('''INSERT INTO projects (name, source_lang, target_lang, input_srt, output_srt,
-                          window_size, history_size, future_size) VALUES (?,?,?,?,?,?,?,?)''',
-                      (name, source_lang, target_lang, input_srt, output_srt, window_size, history_size, future_size))
+                          window_size, history_size, future_size, original_video_path) VALUES (?,?,?,?,?,?,?,?,?)''',
+                      (name, source_lang, target_lang, input_srt, output_srt, window_size, history_size, future_size, original_video_path))
             conn.commit()
             return c.lastrowid
 

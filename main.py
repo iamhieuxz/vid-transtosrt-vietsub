@@ -548,6 +548,11 @@ def run_translation(config):
     project_name = config['project']['name']
     input_path = config['project']['input_srt']
     output_srt = config['project']['output_srt']
+    
+    # Lưu đường dẫn video gốc để tạo shortcut
+    original_video_path = None
+    if is_video_file(input_path):
+        original_video_path = input_path
 
     if is_video_file(input_path):
         console.print(f"\n{STATUS_ICONS['processing']} [cyan]Phat hien file video, bat dau transcribe...[/cyan]")
@@ -591,7 +596,8 @@ def run_translation(config):
             output_srt=output_srt,
             window_size=config.get('window', {}).get('size', 6),
             history_size=config.get('window', {}).get('history', 12),
-            future_size=config.get('window', {}).get('future', 4)
+            future_size=config.get('window', {}).get('future', 4),
+            original_video_path=original_video_path,
         )
         console.print(f"{STATUS_ICONS['success']} [green]Da tao project moi:[/green] ID={project_id}")
 
