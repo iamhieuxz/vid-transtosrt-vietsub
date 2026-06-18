@@ -7,10 +7,10 @@ whisper:
   vad_filter: true
   min_silence_duration_ms: 500
 project:
-  name: test-31
+  name: test-model
   source_lang: Chinese
   target_lang: Vietnamese
-  input_srt: E:/trans-video/test3.mp4
+  input_srt: E:/trans-video/trans-video.mp4
   output_srt: E:/trans-video
 window:
   size: 10
