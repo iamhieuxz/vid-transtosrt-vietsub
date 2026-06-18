@@ -7,7 +7,7 @@ whisper:
   vad_filter: true
   min_silence_duration_ms: 500
 project:
-  name: NSFS-482
+  name: 482-SUB
   source_lang: Japanese
   target_lang: Vietnamese
   input_srt: E:/HIDE/JAV/482/NSFS-482-video-VN.mp4
@@ -61,5 +61,6 @@ model:
   num_predict: 1024
   timeout: 180
 ja_context:
+  enabled: false
   window_size: 20
   scene_review_size: 40

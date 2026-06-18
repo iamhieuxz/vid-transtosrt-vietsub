@@ -188,6 +188,8 @@ class TranslationPipeline:
         # Optional Japanese 3-pass translator (chỉ kích hoạt khi source_lang là JA)
         self.ja_translator = None
         self.ja_context_analyzer = None
+        # 2-tier pipeline (Worker A + Worker C) — MẶC ĐỊNH TẮT, opt-in qua config
+        self.ja_2tier_enabled = config.get('ja_context', {}).get('enabled', False)
         if _is_japanese(config.get('project', {}).get('source_lang', '')):
             try:
                 from .ja_translator import JaTranslator
@@ -199,18 +201,20 @@ class TranslationPipeline:
             except Exception as e:
                 logger.warning(f"Failed to init JaTranslator: {e}, falling back to standard pipeline")
                 self.ja_translator = None
-            # 2-tier: Worker A (context analyzer) chạy preprocessing
-            if self.ja_translator is not None:
+            # 2-tier: Worker A (context analyzer) chỉ init khi BẬT qua config
+            if self.ja_translator is not None and self.ja_2tier_enabled:
                 try:
                     from .ja_context_analyzer import JaContextAnalyzer
                     self.ja_context_analyzer = JaContextAnalyzer(
                         self.translator,
                         context_window_size=config.get('ja_context', {}).get('window_size', 20),
                     )
-                    logger.info("JaContextAnalyzer (Worker A, 2-tier) enabled")
+                    logger.info("JaContextAnalyzer (Worker A, 2-tier) enabled — context will be injected")
                 except Exception as e:
                     logger.warning(f"Failed to init JaContextAnalyzer: {e}, 2-tier disabled")
                     self.ja_context_analyzer = None
+            elif self.ja_translator is not None:
+                logger.info("JaTranslator: 2-tier DISABLED (set ja_context.enabled=true to enable)")
 
     def _load_glossary_terms(self, config: dict) -> List[dict]:
         """Load glossary from config.yaml."""
@@ -276,7 +280,8 @@ class TranslationPipeline:
             dead = self.db.count_dead_letter(project_id)
 
         # 2-tier: Worker C (scene-40 review) - auto-fix keigo/xưng hô inconsistency
-        if self.ja_translator is not None:
+        # Chỉ chạy khi 2-tier được bật (Worker A đã chạy)
+        if self.ja_translator is not None and self.ja_2tier_enabled and self.ja_context_analyzer is not None:
             self._worker_c_scene_review(project_id, project)
 
         if dead > 0:

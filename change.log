@@ -87,7 +87,16 @@ Tất cả thay đổi đáng chú ý của dự án sẽ được ghi vào file
 - **[ADD] `core/pipeline.py` — Worker C scene-40 review.** Sau khi main pipeline + recovery dead letters xong, gom các translation-window thành scene 40 dòng. Với mỗi scene, gọi `ja_translator.qa_review()` với context tương ứng → auto-fix các dòng `ok=false` có `suggestion` hợp lệ (validate bằng `Validator.validate_window_content` trước khi update DB).
 - **[ADD] `core/pipeline.py` — `_get_ja_context_for_window(task, project_id)`.** Tính `context_window_index = start_pos // context_window_size` → query `window_contexts` → trả dict context. Nếu status≠'completed' hoặc không tìm thấy → trả None (fallback 3-pass).
 - **[MOD] `core/pipeline.py` — JA recovery dùng context.** Trong `_recover_dead_letters`, nhánh JA cũng query context từ Worker A và inject vào polish + QA.
-- **[ADD] `config.yaml` — block `ja_context`.** `window_size: 20` (context-window), `scene_review_size: 40` (Worker C review). Có thể config theo phim.
+- **[ADD] `config.yaml` — block `ja_context`.** `enabled: false` (mặc định TẮT), `window_size: 20` (context-window), `scene_review_size: 40` (Worker C review). Set `enabled: true` để bật 2-tier (chậm hơn ~3.75× nhưng chất lượng keigo/xưng hô tốt hơn).
+
+### Lý do 2-tier mặc định tắt
+
+Với phim 2h (~3000 dòng SRT, window-8 = ~375 window):
+- 1-pass zh-style: 375 call ≈ 1 giờ
+- 3-pass JA (1-tier, 2-tier off): 1125 call ≈ 3 giờ
+- 3-pass JA + Worker A + Worker C (2-tier on): 1350 call ≈ 3.75 giờ
+
+Chênh ~3.75× thời gian. Nếu 1-pass chất lượng đủ tốt → giữ mặc định tắt. Bật khi cần keigo siêu chuẩn (phim lịch sự, quan hệ phức tạp).
 
 ### Workflow 2-tier (tóm tắt)
 
