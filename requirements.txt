@@ -8,3 +8,6 @@ json-repair>=0.30.0
 # UI enhancements
 rich>=13.0.0
 tqdm>=4.66.0
+
+# Windows shortcut support (for video .lnk files)
+pywin32>=306; sys_platform == "win32"
