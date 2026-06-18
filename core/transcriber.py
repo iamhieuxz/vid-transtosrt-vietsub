@@ -7,15 +7,14 @@ import tempfile
 from tqdm import tqdm
 
 # Force CUDA DLLs from pip packages instead of system PATH (avoids cublas64_12.dll not found)
-for _pkg in ('nvidia', 'nvidia-cublas-ctublas-cu12', 'nvidia-cublas-cu12'):
-    _nvidia_path = os.path.join(site.getsitepackages()[0], _pkg, 'bin')
-    if os.path.exists(_nvidia_path) and _nvidia_path not in os.environ.get('PATH', ''):
-        os.add_dll_directory(_nvidia_path)
-        break
-else:
-    _nvidia_path = os.path.join(site.getsitepackages()[0], 'nvidia', 'cublas', 'bin')
-    if os.path.exists(_nvidia_path):
-        os.add_dll_directory(_nvidia_path)
+_nvidia_base = site.getsitepackages()[0]
+for _pkg in ('nvidia', 'nvidia-cublas-cu12', 'nvidia-cudnn-cu12'):
+    _dll_path = os.path.join(_nvidia_base, _pkg, 'lib', 'x64')
+    if os.path.exists(_dll_path):
+        os.add_dll_directory(_dll_path)
+_dll_path2 = os.path.join(_nvidia_base, 'nvidia', 'cublas', 'bin')
+if os.path.exists(_dll_path2):
+    os.add_dll_directory(_dll_path2)
 
 from faster_whisper import WhisperModel
 
