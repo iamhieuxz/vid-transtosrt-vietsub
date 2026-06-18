@@ -141,6 +141,14 @@ _LANG_KEY_MAP = {
 }
 
 
+def _is_japanese(lang_name: str) -> bool:
+    """Return True nếu source_lang là tiếng Nhật (chuẩn hoá nhiều dạng)."""
+    if not lang_name:
+        return False
+    n = lang_name.strip().lower()
+    return n in {'japanese', 'ja', 'tiếng nhật', 'tieng nhat', 'tiếng nhật (japanese)'}
+
+
 def _resolve_lang_key(lang_name: str) -> str:
     """Resolve a language display name to a prompt key."""
     key = _LANG_KEY_MAP.get(lang_name.lower(), None)
@@ -176,6 +184,20 @@ class TranslationPipeline:
         self.heartbeat_timeout = config['pipeline'].get('heartbeat_timeout', 600)
         self._context_lock = threading.Lock()
         self._db_write_lock = threading.Lock()
+
+        # Optional Japanese 3-pass translator (chỉ kích hoạt khi source_lang là JA)
+        self.ja_translator = None
+        if _is_japanese(config.get('project', {}).get('source_lang', '')):
+            try:
+                from .ja_translator import JaTranslator
+                self.ja_translator = JaTranslator(
+                    self.translator,
+                    chunk_size=config['window'].get('size', 8),
+                )
+                logger.info("JaTranslator (3-pass keigo-aware) enabled")
+            except Exception as e:
+                logger.warning(f"Failed to init JaTranslator: {e}, falling back to standard pipeline")
+                self.ja_translator = None
 
     def _load_glossary_terms(self, config: dict) -> List[dict]:
         """Load glossary from config.yaml."""
@@ -515,6 +537,12 @@ class TranslationPipeline:
         src_lang = self.config['project']['source_lang']
         tgt_lang = self.config['project']['target_lang']
 
+        # Japanese 3-pass: literal -> polish -> qa (keigo-aware)
+        if self.ja_translator is not None:
+            return self._translate_window_ja(
+                task, source_lines, sub_indices, glossary,
+            )
+
         # Pass 1: standard JSON translation
         prompt = self._build_prompt(project, task, context, glossary=glossary)
         try:
@@ -545,6 +573,64 @@ class TranslationPipeline:
         except Exception as e:
             logger.error(f"Window {task['window_index']}: fallback exception: {e}")
             return None
+
+    def _translate_window_ja(self, task, source_lines, sub_indices, glossary):
+        """Luồng dịch riêng cho tiếng Nhật: 3-pass (literal → polish → qa).
+
+        Trả về (translations, source_lines) giống _translate_window thường.
+        """
+        from .ja_translator import JaTranslator  # noqa: F401
+
+        # Pass 1: literal
+        rough = self.ja_translator.literal_translate(
+            source_lines, glossary_terms=glossary,
+        )
+        if rough is None:
+            logger.warning(f"Window {task['window_index']}: JA literal pass failed")
+            return None
+        if len(rough) != len(source_lines):
+            logger.warning(
+                f"Window {task['window_index']}: JA literal returned {len(rough)} "
+                f"for {len(source_lines)} lines, trimming"
+            )
+            rough = (rough + source_lines)[:len(source_lines)]
+
+        # Pass 2: polish
+        polished = self.ja_translator.polish_translate(
+            source_lines, rough, glossary_terms=glossary,
+        )
+        if len(polished) != len(source_lines):
+            polished = (polished + source_lines)[:len(source_lines)]
+
+        # Pass 3: qa review (chỉ áp suggestion nếu có)
+        try:
+            qa = self.ja_translator.qa_review(
+                source_lines, polished, glossary_terms=glossary,
+            )
+            final = self.ja_translator.apply_qa_results(polished, qa)
+        except Exception as e:
+            logger.debug(f"JA QA pass skipped: {e}")
+            final = polished
+
+        # Validate
+        if not self.validator.validate_window_content(source_lines, final):
+            logger.warning(
+                f"Window {task['window_index']}: JA validation failed, "
+                f"falling back to polished"
+            )
+            final = polished
+            if not self.validator.validate_window_content(source_lines, final):
+                logger.warning(
+                    f"Window {task['window_index']}: JA polished also failed, "
+                    f"falling back to rough"
+                )
+                final = rough
+
+        logger.info(
+            f"Window {task['window_index']}: JA 3-pass OK "
+            f"({len(final)} lines, qa_issues={sum(1 for x in (qa or []) if not x.get('ok'))})"
+        )
+        return final, source_lines
 
     def _get_context(self, project_id, start_pos, end_pos, project, use_translated=False):
         items = self.db.get_all_items(project_id)
@@ -695,18 +781,40 @@ class TranslationPipeline:
                 )
 
                 logger.info(f"Recovery[{dw['window_index']}]: pass-1 raw translate ({len(source_lines)} lines)")
-                raw_trans = self.translator.raw_translate(source_lines, src_lang, tgt_lang, glossary_terms=glossary)
-                if raw_trans is None or len(raw_trans) != len(source_lines):
-                    logger.error(f"Recovery[{dw['window_index']}]: raw_translate returned invalid result, skipping")
-                    continue
 
-                logger.info(f"Recovery[{dw['window_index']}]: pass-2 polish translate")
-                polished = self.translator.polish_translate(
-                    source_lines, raw_trans, src_lang, tgt_lang,
-                    context_before=hist_trans, context_after=fut_src,
-                )
-                if polished is None:
-                    polished = raw_trans  # fallback giữ nguyên rough
+                # Japanese 3-pass recovery (keigo-aware)
+                if self.ja_translator is not None:
+                    rough = self.ja_translator.literal_translate(
+                        source_lines, glossary_terms=glossary,
+                    )
+                    if rough is None or len(rough) != len(source_lines):
+                        logger.error(f"Recovery[{dw['window_index']}]: JA literal invalid, skipping")
+                        continue
+                    polished = self.ja_translator.polish_translate(
+                        source_lines, rough, glossary_terms=glossary,
+                    )
+                    if len(polished) != len(source_lines):
+                        polished = (polished + source_lines)[:len(source_lines)]
+                    try:
+                        qa = self.ja_translator.qa_review(
+                            source_lines, polished, glossary_terms=glossary,
+                        )
+                        polished = self.ja_translator.apply_qa_results(polished, qa)
+                    except Exception:
+                        pass
+                else:
+                    raw_trans = self.translator.raw_translate(source_lines, src_lang, tgt_lang, glossary_terms=glossary)
+                    if raw_trans is None or len(raw_trans) != len(source_lines):
+                        logger.error(f"Recovery[{dw['window_index']}]: raw_translate returned invalid result, skipping")
+                        continue
+
+                    logger.info(f"Recovery[{dw['window_index']}]: pass-2 polish translate")
+                    polished = self.translator.polish_translate(
+                        source_lines, raw_trans, src_lang, tgt_lang,
+                        context_before=hist_trans, context_after=fut_src,
+                    )
+                    if polished is None:
+                        polished = raw_trans  # fallback giữ nguyên rough
 
                 # Validate & commit
                 if not self.validator.validate_window_content(source_lines, polished):

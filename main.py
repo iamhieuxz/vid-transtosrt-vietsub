@@ -529,6 +529,28 @@ def validate_config(config):
 def get_active_model_config(config):
     """Lay cau hinh model dang su dung dua tren che do dich."""
     mode = get_mode_key(config)
+    source_lang = (config.get('project', {}).get('source_lang', '') or '').strip().lower()
+
+    # Uu tien model theo ngon ngu (neu co cau hinh models.<lang>)
+    # Vi du: source_lang='japanese' -> models.ja neu co
+    lang_to_key = {
+        'japanese': 'ja', 'tiếng nhật': 'ja', 'tieng nhat': 'ja', 'ja': 'ja',
+        'chinese': 'zh', 'tiếng trung': 'zh', 'tieng trung': 'zh', 'zh': 'zh',
+        'korean': 'ko', 'tiếng hàn': 'ko', 'tieng han': 'ko', 'ko': 'ko',
+        'english': 'en', 'tiếng anh': 'en', 'tieng anh': 'en', 'en': 'en',
+    }
+    lang_key = lang_to_key.get(source_lang)
+    if lang_key and config.get('models', {}).get(lang_key):
+        cfg = config['models'][lang_key]
+        return {
+            'name': cfg.get('name', 'huihui_ai/hunyuan-mt-abliterated:7b-chimera'),
+            'ollama_url': cfg.get('ollama_url', 'http://localhost:11434/api/generate'),
+            'temperature': cfg.get('temperature', 0.1),
+            'repeat_penalty': cfg.get('repeat_penalty', 1.2),
+            'num_ctx': cfg.get('num_ctx', 6144),
+            'num_predict': cfg.get('num_predict', 1024),
+            'timeout': cfg.get('timeout', 180),
+        }
 
     if mode == 'uncen':
         uncen_cfg = config.get('models', {}).get('uncen', {})

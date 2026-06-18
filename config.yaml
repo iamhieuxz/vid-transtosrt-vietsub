@@ -35,6 +35,16 @@ models:
     num_ctx: 6144
     num_predict: 1024
     timeout: 180
+  ja:
+    # Model riêng cho Japanese (keigo-aware, 3-pass)
+    # Hiện dùng chung qwen3 vì đang là model duy nhất trong hệ thống
+    name: huihui_ai/qwen3-abliterated:8b-v2
+    ollama_url: http://localhost:11434/api/generate
+    temperature: 0.1
+    repeat_penalty: 1.2
+    num_ctx: 8192
+    num_predict: 1024
+    timeout: 180
 pipeline:
   enable_glossary: true
   max_retries: 3
