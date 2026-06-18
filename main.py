@@ -211,7 +211,7 @@ def print_main_menu(config):
     mode_display = f"{mode_info['icon']} {mode_info['display']}"
 
     console.print(f"  [1] Chon file Input          : [yellow]{truncate_path(input_path)}[/yellow]")
-    console.print(f"  [2] Chon file Output         : [yellow]{truncate_path(output_path)}[/yellow]")
+    console.print(f"  [2] Chon folder Output       : [yellow]{truncate_path(output_path)}[/yellow]")
     console.print(f"  [3] Ten Project              : [yellow]{project_name}[/yellow]")
     console.print(f"  [4] Chon ngon ngu           : [cyan]{src_display}[/cyan] -> [green]{tgt_display}[/green]")
     console.print(f"  [5] Che do dich             : {mode_display}")
@@ -262,31 +262,57 @@ def get_input_path_interactive(config):
     console.print()
 
 
+def select_output_folder_gui(default_name="output_folder"):
+    """Mo folder picker cho output."""
+    import tkinter as tk
+    from tkinter import filedialog
+    root = None
+    try:
+        try:
+            root = tk._default_root
+            if root is None:
+                root = tk.Tk()
+                root.withdraw()
+        except AttributeError:
+            root = tk.Tk()
+            root.withdraw()
+        root.attributes('-topmost', True)
+        folder_path = filedialog.askdirectory(
+            title="Chon folder Output",
+            mustexist=False,
+        )
+        return folder_path if folder_path else None
+    except Exception as e:
+        logger.error(f"GUI folder picker failed: {e}")
+        return None
+    finally:
+        if root is not None:
+            try:
+                root.destroy()
+            except Exception:
+                pass
+
+
 def get_output_path_interactive(config):
-    """Lay output path tu nguoi dung."""
-    console.print(f"\n{STATUS_ICONS['start']} [cyan]Chon file Output[/cyan]")
-    console.print("  [1] Mo file picker (Explorer)")
+    """Chon folder output (ten file se duoc tu dat theo project name)."""
+    console.print(f"\n{STATUS_ICONS['start']} [cyan]Chon folder Output[/cyan]")
+    console.print("  [1] Mo folder picker (Explorer)")
     console.print("  [2] Nhap duong dan thu cong")
     console.print("  [0] Quay lai")
 
     choice = input("\nLua chon: ").strip()
 
     if choice == '1':
-        default_name = "output.srt"
-        input_path = config.get('project', {}).get('input_srt', '')
-        if input_path:
-            base = os.path.splitext(os.path.basename(input_path))[0]
-            default_name = f"{base}-vi.srt"
-
-        path = select_output_file_gui(default_name)
+        path = select_output_folder_gui()
         if path:
+            # Luu folder path; ten file se duoc pipeline gan theo project name
             config.setdefault('project', {})['output_srt'] = path
             save_config(config)
-            console.print(f"{STATUS_ICONS['success']} [green]Da chon:[/green] {path}")
+            console.print(f"{STATUS_ICONS['success']} [green]Da chon folder:[/green] {path}")
         else:
             console.print(f"{STATUS_ICONS['warning']} [yellow]Da huy[/yellow]")
     elif choice == '2':
-        path = input("Nhap duong dan file output: ").strip().strip('"')
+        path = input("Nhap duong dan folder output: ").strip().strip('"')
         if path:
             config.setdefault('project', {})['output_srt'] = path
             save_config(config)
@@ -482,7 +508,7 @@ def validate_config(config):
         if 'input_srt' not in config['project']:
             errors.append("Thieu 'input_srt' trong cau hinh")
         if 'output_srt' not in config['project']:
-            errors.append("Thieu 'output_srt' trong cau hinh")
+            errors.append("Thieu 'output_srt' (folder output) trong cau hinh")
         if 'name' not in config['project']:
             errors.append("Thieu 'name' trong cau hinh")
 
