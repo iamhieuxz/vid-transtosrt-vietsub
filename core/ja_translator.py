@@ -84,7 +84,7 @@ Bản dịch "thô" (ROUGH) cần được trau chuốt cho tự nhiên, nhất 
 2. Câu thoại nghe như người Việt nói, không "dịch máy".
 3. Giữ đúng sắc thái cảm xúc (ngạc nhiên, giận, mỉa mai...).
 4. Nếu ROUGH còn sót romaji/kana onomatopoeia, dịch lại sang tiếng Việt.
-
+{context_block}
 QUY TẮC ĐẦU RA:
 - Trả về JSON array hợp lệ, không kèm text ngoài JSON.
 - Số phần tử đúng bằng số dòng đầu vào.
@@ -104,12 +104,13 @@ _QA_TEMPLATE = """\
 
 Bạn là reviewer. So sánh từng cặp (ORIGINAL gốc tiếng Nhật, TRANSLATION bản dịch tiếng Việt).
 Nhiệm vụ: phát hiện "translation drift" — bản dịch lệch nghĩa, bỏ sót thông tin, hoặc còn sót romaji/kana.
-
+{context_block}
 QUY TẮC:
 - Trả về JSON array, mỗi phần tử:
   {{"index": <1-based>, "ok": true|false, "issue": "<mô tả ngắn nếu ok=false>", "suggestion": "<bản dịch đề xuất nếu ok=false>"}}
 - ok=true nếu bản dịch đúng nghĩa, tự nhiên, không có romaji/kana sót.
 - ok=false nếu lệch nghĩa, bỏ sót particle, còn romaji/kana onomatopoeia, hoặc quá máy móc.
+- Nếu xưng hô trong TRANSLATION không khớp với bản đồ pronouns_map ở context, đánh ok=false.
 
 TUYỆT ĐỐI KHÔNG:
 - Bỏ sót dòng nào trong danh sách.
@@ -134,6 +135,43 @@ def _render_glossary(glossary_terms) -> str:
             line += f" (context: {t['context_hint']})"
         lines.append(line)
     return "MANDATORY GLOSSARY:\n" + "\n".join(lines) + "\n\n"
+
+
+def _render_context(context_summary) -> str:
+    """Render context summary (từ JaContextAnalyzer) thành block inject vào prompt polish.
+
+    Nếu context_summary None / rỗng → trả chuỗi rỗng (baseline 3-pass).
+    """
+    if not context_summary:
+        return ""
+    parts = []
+    speakers = context_summary.get("speakers") or []
+    if speakers:
+        parts.append(f"- Nhân vật xuất hiện: {', '.join(speakers)}")
+    pronouns = context_summary.get("pronouns_map") or {}
+    if pronouns:
+        # Format: "Taro->Hanako: Taro dùng 'tớ', Hanako dùng 'cậu'"
+        pairs_lines = []
+        for pair, mapping in pronouns.items():
+            if not isinstance(mapping, dict):
+                continue
+            self_pronoun = mapping.get("self") or "?"
+            other_pronoun = mapping.get("other") or "?"
+            pairs_lines.append(f"  + {pair}: nói 'tôi' là '{self_pronoun}', gọi đối phương là '{other_pronoun}'")
+        if pairs_lines:
+            parts.append("- Xưng hô chuẩn hóa (DÙNG XUYÊN SUỐT):\n" + "\n".join(pairs_lines))
+    tone = context_summary.get("tone")
+    if tone and tone != "unknown":
+        parts.append(f"- Tone: {tone}")
+    setting = context_summary.get("setting")
+    if setting and setting != "unknown":
+        parts.append(f"- Bối cảnh: {setting}")
+    summary = context_summary.get("summary")
+    if summary:
+        parts.append(f"- Tóm tắt tình huống: {summary}")
+    if not parts:
+        return ""
+    return "NGỮ CẢNH WINDOW (đã phân tích trước, dùng để chuẩn hóa xưng hô):\n" + "\n".join(parts) + "\n\n"
 
 
 def _number_lines(lines: List[str]) -> str:
@@ -237,16 +275,26 @@ class JaTranslator:
         source_lines: List[str],
         rough_translations: List[str],
         glossary_terms=None,
+        context_summary: Optional[dict] = None,
     ) -> List[str]:
-        """Pass 2: trau chuốt. Trả về list (giữ rough nếu thất bại)."""
+        """Pass 2: trau chuốt. Trả về list (giữ rough nếu thất bại).
+
+        Parameters
+        ----------
+        context_summary : dict, optional
+            Output từ JaContextAnalyzer: {speakers, pronouns_map, tone, setting, summary}.
+            Nếu None thì polish theo baseline 3-pass (không có xưng hô mapping).
+        """
         if not rough_translations or len(rough_translations) != len(source_lines):
             return rough_translations
 
         glossary_block = _render_glossary(glossary_terms)
+        context_block = _render_context(context_summary)
         pairs_text = _format_pairs(source_lines, rough_translations)
         prompt = _POLISH_TEMPLATE.format(
             system=_SYSTEM_PROMPT,
             glossary_block=glossary_block,
+            context_block=context_block,
             pairs=pairs_text,
         )
 
@@ -280,19 +328,27 @@ class JaTranslator:
         source_lines: List[str],
         translations: List[str],
         glossary_terms=None,
+        context_summary: Optional[dict] = None,
     ) -> List[dict]:
         """Pass 3: QA review. Trả về list {index, ok, issue, suggestion}.
 
         Dòng nào ok=false sẽ được thay bằng ``suggestion`` (nếu có).
+
+        Parameters
+        ----------
+        context_summary : dict, optional
+            Context từ Worker A; nếu có, QA check cả xưng hô có khớp pronouns_map không.
         """
         if not translations or len(translations) != len(source_lines):
             return []
 
         glossary_block = _render_glossary(glossary_terms)
+        context_block = _render_context(context_summary)
         pairs_text = _format_pairs(source_lines, translations)
         prompt = _QA_TEMPLATE.format(
             system=_SYSTEM_PROMPT,
             glossary_block=glossary_block,
+            context_block=context_block,
             pairs=pairs_text,
         )
 

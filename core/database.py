@@ -80,6 +80,25 @@ class Database:
         c.execute('CREATE INDEX IF NOT EXISTS idx_window_project ON windows(project_id, window_index)')
         c.execute('CREATE INDEX IF NOT EXISTS idx_tm_lookup ON translation_memory(source_lang, target_lang, source_text, domain)')
         c.execute('CREATE INDEX IF NOT EXISTS idx_window_status ON windows(project_id, status)')
+
+        # Context summary cho JA 2-tier window: mỗi context-window (20 dòng) -> 1 summary
+        c.execute('''CREATE TABLE IF NOT EXISTS window_contexts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            context_window_index INTEGER NOT NULL,
+            start_pos INTEGER NOT NULL,
+            end_pos INTEGER NOT NULL,
+            speakers_json TEXT,
+            pronouns_map TEXT,
+            tone TEXT,
+            setting TEXT,
+            summary TEXT,
+            status TEXT DEFAULT 'pending',
+            error_message TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(project_id, context_window_index))''')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_ctx_project ON window_contexts(project_id, context_window_index)')
+
         conn.commit()
         conn.close()
 
@@ -295,3 +314,66 @@ class Database:
             conn.execute("INSERT INTO glossary (project_id, source_term, target_term, context_hint) VALUES (?,?,?,?)",
                          (project_id, source, target, hint))
             conn.commit()
+
+    # --- Window Contexts (JA 2-tier pipeline) ---
+    def save_window_context(self, project_id, context_window_index, start_pos, end_pos,
+                            speakers_json, pronouns_map, tone, setting, summary,
+                            status='completed'):
+        """Lưu hoặc update context summary cho 1 context-window."""
+        with self._get_connection() as conn:
+            conn.execute('''INSERT INTO window_contexts
+                            (project_id, context_window_index, start_pos, end_pos,
+                             speakers_json, pronouns_map, tone, setting, summary, status)
+                            VALUES (?,?,?,?,?,?,?,?,?,?)
+                            ON CONFLICT(project_id, context_window_index) DO UPDATE SET
+                            start_pos=excluded.start_pos, end_pos=excluded.end_pos,
+                            speakers_json=excluded.speakers_json, pronouns_map=excluded.pronouns_map,
+                            tone=excluded.tone, setting=excluded.setting, summary=excluded.summary,
+                            status=excluded.status, error_message=NULL''',
+                         (project_id, context_window_index, start_pos, end_pos,
+                          speakers_json, pronouns_map, tone, setting, summary, status))
+            conn.commit()
+
+    def get_window_context(self, project_id, context_window_index):
+        """Lấy context của 1 context-window cụ thể. Trả None nếu chưa có."""
+        with self._get_connection() as conn:
+            row = conn.execute('''SELECT * FROM window_contexts
+                                  WHERE project_id=? AND context_window_index=?''',
+                               (project_id, context_window_index)).fetchone()
+            return dict(row) if row else None
+
+    def get_context_for_pos(self, project_id, pos):
+        """Tìm context-window chứa vị trí pos. Trả None nếu chưa có."""
+        with self._get_connection() as conn:
+            row = conn.execute('''SELECT * FROM window_contexts
+                                  WHERE project_id=? AND start_pos<=? AND end_pos>=?
+                                  ORDER BY context_window_index LIMIT 1''',
+                               (project_id, pos, pos)).fetchone()
+            return dict(row) if row else None
+
+    def count_pending_contexts(self, project_id):
+        with self._get_connection() as conn:
+            return conn.execute('''SELECT COUNT(*) FROM window_contexts
+                                   WHERE project_id=? AND status='pending' ''',
+                                (project_id,)).fetchone()[0]
+
+    def count_completed_contexts(self, project_id):
+        with self._get_connection() as conn:
+            return conn.execute('''SELECT COUNT(*) FROM window_contexts
+                                   WHERE project_id=? AND status='completed' ''',
+                                (project_id,)).fetchone()[0]
+
+    def mark_context_failed(self, project_id, context_window_index, error_message):
+        with self._get_connection() as conn:
+            conn.execute('''UPDATE window_contexts SET status='failed', error_message=?
+                            WHERE project_id=? AND context_window_index=?''',
+                         (error_message, project_id, context_window_index))
+            conn.commit()
+
+    def list_context_windows(self, project_id):
+        """Trả về list toàn bộ context-window của project, sorted theo index."""
+        with self._get_connection() as conn:
+            rows = conn.execute('''SELECT * FROM window_contexts
+                                   WHERE project_id=? ORDER BY context_window_index''',
+                                (project_id,)).fetchall()
+            return [dict(r) for r in rows]
