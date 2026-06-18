@@ -6,15 +6,18 @@ import logging
 import tempfile
 from tqdm import tqdm
 
-# Force CUDA DLLs from pip packages instead of system PATH (avoids cublas64_12.dll not found)
-_nvidia_base = site.getsitepackages()[0]
-for _pkg in ('nvidia', 'nvidia-cublas-cu12', 'nvidia-cudnn-cu12'):
-    _dll_path = os.path.join(_nvidia_base, _pkg, 'lib', 'x64')
-    if os.path.exists(_dll_path):
-        os.add_dll_directory(_dll_path)
-_dll_path2 = os.path.join(_nvidia_base, 'nvidia', 'cublas', 'bin')
-if os.path.exists(_dll_path2):
-    os.add_dll_directory(_dll_path2)
+# Force CUDA DLLs from pip packages (fixes cublas64_12.dll not found on Windows)
+_nvidia_dll_paths = [
+    r"C:\Users\iamhieuxz\AppData\Local\Programs\Python\Python311\Lib\site-packages\nvidia\cublas\bin",
+    r"C:\Users\iamhieuxz\AppData\Local\Programs\Python\Python311\Lib\site-packages\nvidia\cuda_nvrtc\bin",
+    r"C:\Users\iamhieuxz\AppData\Local\Programs\Python\Python311\Lib\site-packages\nvidia\cublas\lib\x64",
+]
+for _p in _nvidia_dll_paths:
+    if os.path.exists(_p) and _p not in os.environ.get('PATH', ''):
+        try:
+            os.add_dll_directory(_p)
+        except Exception:
+            pass
 
 from faster_whisper import WhisperModel
 
