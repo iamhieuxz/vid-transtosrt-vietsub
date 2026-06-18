@@ -452,19 +452,39 @@ class TranslationPipeline:
             logger.debug(f"{STATUS_ICONS['success']} Window {task['window_index']}: all lines from TM")
             return tm_hits, source_lines
 
+        glossary = self._get_glossary(project_id) if self.enable_glossary else []
+        src_lang = self.config['project']['source_lang']
+        tgt_lang = self.config['project']['target_lang']
+
+        # Pass 1: standard JSON translation
         prompt = self._build_prompt(project, task, context)
         try:
             raw = self.translator.generate(prompt, temperature=0.1)
             json_data = self.translator.extract_json(raw)
-            if json_data is None:
+            if json_data is not None and self.validator.validate_json_translation(json_data, sub_indices):
+                mapping = {item['id']: item['text'] for item in json_data}
+                translations = [mapping.get(i, '') for i in sub_indices]
+                logger.info(f"Window {task['window_index']}: standard pass OK ({len(translations)} lines)")
+                return translations, source_lines
+        except Exception as e:
+            logger.warning(f"Window {task['window_index']}: standard pass failed ({e}), trying fallback...")
+
+        # Pass 2: fallback — chunk + simple prompt, no JSON
+        logger.info(f"Window {task['window_index']}: using fallback translation ({len(source_lines)} lines)")
+        try:
+            translations = self.translator.fallback_translate(
+                source_lines, src_lang, tgt_lang, glossary_terms=glossary
+            )
+            if translations is None:
+                logger.error(f"Window {task['window_index']}: fallback returned None")
                 return None
-            if not self.validator.validate_json_translation(json_data, sub_indices):
+            if not self.validator.validate_window_content(source_lines, translations):
+                logger.warning(f"Window {task['window_index']}: fallback validation failed")
                 return None
-            mapping = {item['id']: item['text'] for item in json_data}
-            translations = [mapping.get(i, '') for i in sub_indices]
+            logger.info(f"Window {task['window_index']}: fallback pass OK")
             return translations, source_lines
         except Exception as e:
-            logger.error(f"{STATUS_ICONS['error']} LLM call failed: {e}")
+            logger.error(f"Window {task['window_index']}: fallback exception: {e}")
             return None
 
     def _get_context(self, project_id, start_pos, end_pos, project, use_translated=False):
