@@ -7,11 +7,11 @@ whisper:
   vad_filter: true
   min_silence_duration_ms: 500
 project:
-  name: 482-SUB
+  name: test-subbbjp
   source_lang: Japanese
   target_lang: Vietnamese
-  input_srt: E:/HIDE/JAV/482/NSFS-482-video-VN.mp4
-  output_srt: E:/HIDE/JAV/482
+  input_srt: E:/trans-video/test-sub-nhat/jp-test.mp4
+  output_srt: E:/trans-video/test-sub-nhat
 window:
   size: 6
   history: 12
@@ -62,5 +62,8 @@ model:
   timeout: 180
 ja_context:
   enabled: false
-  window_size: 18  # 6 * 3 = chia het cho window.size=6
-  scene_review_size: 36  # 18 * 2 = chia het cho window_size
+  window_size: 18
+  scene_review_size: 36
+ja_trans2:
+  enabled: true
+  batch_size: 20

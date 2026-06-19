@@ -42,6 +42,16 @@ class Database:
             FOREIGN KEY(project_id) REFERENCES projects(id),
             UNIQUE(project_id, sub_index))''')
 
+        # Migration: add UNIQUE constraint if table exists without it (pre-existing DB)
+        try:
+            c.execute("SELECT 1 FROM pragma_index_list('subtitle_items') WHERE name LIKE '%subtitle_items%'")
+            indexes = c.fetchall()
+            has_unique = any('sub_index' in str(idx) for idx in indexes)
+            if not has_unique:
+                c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_subtitle_items_unique ON subtitle_items(project_id, sub_index)")
+        except Exception:
+            pass
+
         c.execute('''CREATE TABLE IF NOT EXISTS windows (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER, window_index INTEGER,
@@ -141,11 +151,9 @@ class Database:
         with self._get_connection() as conn:
             c = conn.cursor()
             for it in items:
-                c.execute("""INSERT INTO subtitle_items (project_id, sub_index, start_time, end_time, original_text, status) 
-                              VALUES (?,?,?,?,?,'pending')
-                              ON CONFLICT(project_id, sub_index) DO UPDATE SET
-                              start_time=excluded.start_time, end_time=excluded.end_time,
-                              original_text=excluded.original_text, status='pending', translated_text=NULL""",
+                # INSERT OR REPLACE: SQLite resolves conflict via unique index on (project_id, sub_index)
+                c.execute("""INSERT OR REPLACE INTO subtitle_items (project_id, sub_index, start_time, end_time, original_text, status, translated_text)
+                              VALUES (?,?,?,?,?,'pending', NULL)""",
                           (project_id, it['index'], it['start'], it['end'], it['text']))
             conn.commit()
 

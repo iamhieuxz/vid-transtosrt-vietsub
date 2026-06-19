@@ -185,36 +185,39 @@ class TranslationPipeline:
         self._context_lock = threading.Lock()
         self._db_write_lock = threading.Lock()
 
-        # Optional Japanese 3-pass translator (chỉ kích hoạt khi source_lang là JA)
+        # Optional Japanese batch refiner (ja_trans2) — chạy SAU pipeline chính
+        # Dùng cho mọi ngôn ngữ source, nhưng HOẠT ĐỘNG với JA (vì prompt JA-specific)
         self.ja_translator = None
+        self.ja_translator2 = None
         self.ja_context_analyzer = None
-        # 2-tier pipeline (Worker A + Worker C) — MẶC ĐỊNH TẮT, opt-in qua config
         self.ja_2tier_enabled = config.get('ja_context', {}).get('enabled', False)
-        if _is_japanese(config.get('project', {}).get('source_lang', '')):
+        self._is_japanese_source = _is_japanese(config.get('project', {}).get('source_lang', ''))
+
+        # luôn init ja_trans2 nếu là source JA
+        if self._is_japanese_source:
             try:
-                from .ja_translator import JaTranslator
-                self.ja_translator = JaTranslator(
+                from .ja_translator2 import JaTranslator2
+                batch_size = config.get('ja_trans2', {}).get('batch_size', 20)
+                self.ja_translator2 = JaTranslator2(
                     self.translator,
-                    chunk_size=config['window'].get('size', 8),
+                    batch_size=batch_size,
                 )
-                logger.info("JaTranslator (3-pass keigo-aware) enabled")
+                logger.info(f"JaTranslator2 (batch refiner, batch_size={batch_size}) enabled")
             except Exception as e:
-                logger.warning(f"Failed to init JaTranslator: {e}, falling back to standard pipeline")
-                self.ja_translator = None
-            # 2-tier: Worker A (context analyzer) chỉ init khi BẬT qua config
-            if self.ja_translator is not None and self.ja_2tier_enabled:
+                logger.warning(f"Failed to init JaTranslator2: {e}, skipping batch refine")
+                self.ja_translator2 = None
+            # 2-tier Worker A vẫn giữ nếu bật, nhưng DÙNG với pipeline zh
+            if self.ja_2tier_enabled:
                 try:
                     from .ja_context_analyzer import JaContextAnalyzer
                     self.ja_context_analyzer = JaContextAnalyzer(
                         self.translator,
                         context_window_size=config.get('ja_context', {}).get('window_size', 18),
                     )
-                    logger.info("JaContextAnalyzer (Worker A, 2-tier) enabled — context will be injected")
+                    logger.info("JaContextAnalyzer (Worker A) enabled")
                 except Exception as e:
                     logger.warning(f"Failed to init JaContextAnalyzer: {e}, 2-tier disabled")
                     self.ja_context_analyzer = None
-            elif self.ja_translator is not None:
-                logger.info("JaTranslator: 2-tier DISABLED (set ja_context.enabled=true to enable)")
 
     def _load_glossary_terms(self, config: dict) -> List[dict]:
         """Load glossary from config.yaml."""
@@ -247,8 +250,7 @@ class TranslationPipeline:
         self._create_windows(project_id, project)
         self.db.recover_stuck_tasks(project_id, self.heartbeat_timeout)
 
-        # 2-tier: Worker A phân tích ngữ cảnh toàn phim TRƯỚC khi pipeline main chạy
-        # Tuần tự theo thống nhất với user (sequential_first)
+        # Worker A: context analysis — chạy TRƯỚC pipeline (dùng với ZH pipeline + ja_trans2)
         if self.ja_context_analyzer is not None:
             console.print(f"{STATUS_ICONS['start']} [cyan]Worker A: analyzing context windows...[/cyan]")
             stats = self.ja_context_analyzer.analyze_project(project_id, self.db)
@@ -256,7 +258,11 @@ class TranslationPipeline:
                 f"{STATUS_ICONS['success']} Context analysis: "
                 f"{stats['completed']}/{stats['total']} OK, {stats['failed']} failed"
             )
-            # Nếu 0 context-window OK → cảnh báo nhưng vẫn chạy (fallback 3-pass)
+            if stats['completed'] == 0 and stats['total'] > 0:
+                console.print(
+                    f"{STATUS_ICONS['warning']} [yellow]No context available, "
+                    f"running with ZH pipeline + batch refine[/yellow]"
+                )
             if stats['completed'] == 0 and stats['total'] > 0:
                 console.print(
                     f"{STATUS_ICONS['warning']} [yellow]No context available, "
@@ -270,19 +276,28 @@ class TranslationPipeline:
         else:
             self._process_sequential(project_id, project)
 
-        pending = self.db.count_pending_windows(project_id)
+        # Recovery dead windows (dùng standard pipeline zh)
         dead = self.db.count_dead_letter(project_id)
-
-        # Recovery dead windows: 3-pass (raw → polish → validate & save)
         if dead > 0:
             recovered = self._recover_dead_letters(project_id, project)
-            # Re-count after recovery
             dead = self.db.count_dead_letter(project_id)
 
-        # 2-tier: Worker C (scene-40 review) - auto-fix keigo/xưng hô inconsistency
-        # Chỉ chạy khi 2-tier được bật (Worker A đã chạy)
-        if self.ja_translator is not None and self.ja_2tier_enabled and self.ja_context_analyzer is not None:
-            self._worker_c_scene_review(project_id, project)
+        # ja_trans2: batch refine SAU khi pipeline hoàn tất
+        # Chỉ chạy nếu là source JA và ja_translator2 đã init
+        refined_stats = None
+        if self.ja_translator2 is not None and self._is_japanese_source:
+            console.print(f"{STATUS_ICONS['start']} [cyan]JaTranslator2: batch refining translated lines...[/cyan]")
+            refined_stats = self.ja_translator2.refine_project(
+                self.db, project_id,
+                progress_callback=lambda done, total: None,
+            )
+            console.print(
+                f"{STATUS_ICONS['success']} Batch refine done: "
+                f"{refined_stats['refined']}/{refined_stats['total']} lines refined"
+            )
+
+        pending = self.db.count_pending_windows(project_id)
+        dead = self.db.count_dead_letter(project_id)
 
         if dead > 0:
             self.db.update_project_status(project_id, 'completed_with_errors')
@@ -294,7 +309,7 @@ class TranslationPipeline:
         # Export to output folder with project name
         self._export_to_folder(project_id, project)
 
-        self._print_summary(project_id, pending, dead)
+        self._print_summary(project_id, pending, dead, refined_stats=refined_stats)
         console.print(f"\n{STATUS_ICONS['complete']} [green]Pipeline finished successfully![/green]")
 
     def _export_to_folder(self, project_id: int, project: dict):
@@ -330,7 +345,7 @@ class TranslationPipeline:
         else:
             console.print(f"{STATUS_ICONS['warning']} [yellow]Original video not available for shortcut[/yellow]")
 
-    def _print_summary(self, project_id: int, pending: int, dead: int):
+    def _print_summary(self, project_id: int, pending: int, dead: int, refined_stats: dict = None):
         """In bang tom tat ket qua."""
         table = Table(title="Translation Summary")
         table.add_column("Metric", style="cyan")
@@ -346,6 +361,11 @@ class TranslationPipeline:
         table.add_row("Progress", f"{progress_pct:.1f}%")
         table.add_row("Pending", str(pending))
         table.add_row("Failed (dead letter)", str(dead))
+        if refined_stats:
+            table.add_row(
+                "Batch refined (ja_trans2)",
+                f"{refined_stats['refined']}/{refined_stats['total']} lines"
+            )
         console.print(table)
 
     def _parse_srt(self, project_id, input_path):
