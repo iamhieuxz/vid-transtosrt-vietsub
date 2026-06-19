@@ -14,7 +14,8 @@ class Database:
         return conn
 
     def _init_db(self):
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30)
+        conn.execute("PRAGMA busy_timeout=30000")
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         c = conn.cursor()
@@ -38,7 +39,8 @@ class Database:
             start_time TEXT, end_time TEXT,
             original_text TEXT, translated_text TEXT,
             status TEXT DEFAULT 'pending',
-            FOREIGN KEY(project_id) REFERENCES projects(id))''')
+            FOREIGN KEY(project_id) REFERENCES projects(id),
+            UNIQUE(project_id, sub_index))''')
 
         c.execute('''CREATE TABLE IF NOT EXISTS windows (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,6 +72,8 @@ class Database:
             error_message TEXT, original_text TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(project_id) REFERENCES projects(id))''')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_dlq_project ON dead_letter_queue(project_id)')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_dlq_window ON dead_letter_queue(window_id)')
 
         c.execute('''CREATE TABLE IF NOT EXISTS glossary (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -137,7 +141,11 @@ class Database:
         with self._get_connection() as conn:
             c = conn.cursor()
             for it in items:
-                c.execute("INSERT INTO subtitle_items (project_id, sub_index, start_time, end_time, original_text, status) VALUES (?,?,?,?,?,'pending')",
+                c.execute("""INSERT INTO subtitle_items (project_id, sub_index, start_time, end_time, original_text, status) 
+                              VALUES (?,?,?,?,?,'pending')
+                              ON CONFLICT(project_id, sub_index) DO UPDATE SET
+                              start_time=excluded.start_time, end_time=excluded.end_time,
+                              original_text=excluded.original_text, status='pending', translated_text=NULL""",
                           (project_id, it['index'], it['start'], it['end'], it['text']))
             conn.commit()
 
@@ -294,11 +302,21 @@ class Database:
         if len(source_text) < min_char_count:
             return
         with self._get_connection() as conn:
+            existing = conn.execute('''SELECT target_text, confidence FROM translation_memory
+                                     WHERE source_lang=? AND target_lang=? AND source_text=? AND domain=?''',
+                                   (source_lang, target_lang, source_text, domain)).fetchone()
+            if existing and existing['confidence'] >= confidence:
+                # Only update if existing confidence is lower
+                conn.execute('''UPDATE translation_memory SET usage_count=usage_count+1, last_used=CURRENT_TIMESTAMP
+                               WHERE source_lang=? AND target_lang=? AND source_text=? AND domain=?''',
+                            (source_lang, target_lang, source_text, domain))
+                conn.commit()
+                return
             conn.execute('''INSERT INTO translation_memory (source_lang, target_lang, source_text, target_text, confidence, char_count, domain)
                             VALUES (?,?,?,?,?,?,?)
                             ON CONFLICT(source_lang, target_lang, source_text, domain) DO UPDATE SET
                             target_text=excluded.target_text,
-                            confidence=(confidence+excluded.confidence)/2,
+                            confidence=excluded.confidence,
                             usage_count=usage_count+1,
                             last_used=CURRENT_TIMESTAMP''',
                          (source_lang, target_lang, source_text, target_text, confidence, len(source_text), domain))

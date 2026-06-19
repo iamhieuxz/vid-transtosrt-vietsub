@@ -207,7 +207,7 @@ class TranslationPipeline:
                     from .ja_context_analyzer import JaContextAnalyzer
                     self.ja_context_analyzer = JaContextAnalyzer(
                         self.translator,
-                        context_window_size=config.get('ja_context', {}).get('window_size', 20),
+                        context_window_size=config.get('ja_context', {}).get('window_size', 18),
                     )
                     logger.info("JaContextAnalyzer (Worker A, 2-tier) enabled — context will be injected")
                 except Exception as e:
@@ -355,7 +355,8 @@ class TranslationPipeline:
         subs = pysrt.open(input_path, encoding='utf-8')
         if not subs:
             raise ValueError(f"{STATUS_ICONS['error']} SRT file is empty: {input_path}")
-        items = [{'index': s.index, 'start': str(s.start), 'end': str(s.end), 'text': s.text.replace('\n', ' ').strip()} for s in subs]
+        # Preserve newlines for multi-line subtitles, normalize whitespace
+        items = [{'index': s.index, 'start': str(s.start), 'end': str(s.end), 'text': ' '.join(s.text.split())} for s in subs]
         if not items:
             raise ValueError(f"{STATUS_ICONS['error']} No subtitle items found in: {input_path}")
         self.db.save_subtitle_items(project_id, items)
@@ -515,30 +516,29 @@ class TranslationPipeline:
         start_sub = task['start_sub_index']
         end_sub = task['end_sub_index']
 
-        # Lock context reads to prevent parallel workers from seeing partial translations
-        # from concurrently-running windows that haven't been committed yet
+        # Lock context reads and DB writes to prevent race conditions in parallel mode
         with self._context_lock:
             context = self._get_context(project_id, task['start_pos'], task['end_pos'], project, use_translated=use_translated_history)
             result = self._translate_window(project_id, task, context, project)
 
-        if result:
-            translations, source_lines = result
-            if self.validator.validate_window_content(source_lines, translations):
-                try:
-                    self.db.commit_window(project_id, win_id, start_sub, end_sub, translations)
-                    self._save_to_tm(project, source_lines, translations)
-                    return True
-                except Exception as e:
-                    logger.error(f"{STATUS_ICONS['error']} commit_window failed: {e}")
-                    self.db.mark_task_failed(win_id, str(e), retry_count_increment=True)
+            if result:
+                translations, source_lines = result
+                if self.validator.validate_window_content(source_lines, translations):
+                    try:
+                        self.db.commit_window(project_id, win_id, start_sub, end_sub, translations)
+                        self._save_to_tm(project, source_lines, translations)
+                        return True
+                    except Exception as e:
+                        logger.error(f"{STATUS_ICONS['error']} commit_window failed: {e}")
+                        self.db.mark_task_failed(win_id, str(e), retry_count_increment=True)
+                        return False
+                else:
+                    logger.warning(f"{STATUS_ICONS['warning']} Window {win_idx} failed validation")
+                    self.db.mark_task_failed(win_id, "Validation failed", retry_count_increment=True)
                     return False
             else:
-                logger.warning(f"{STATUS_ICONS['warning']} Window {win_idx} failed validation")
-                self.db.mark_task_failed(win_id, "Validation failed", retry_count_increment=True)
+                self.db.mark_task_failed(win_id, "LLM output invalid", retry_count_increment=True)
                 return False
-        else:
-            self.db.mark_task_failed(win_id, "LLM output invalid", retry_count_increment=True)
-            return False
 
     def _translate_window(self, project_id, task, context, project):
         orig_lines_with_ids = [l.strip() for l in task['original_text'].split('\n') if l.strip()]
@@ -647,6 +647,7 @@ class TranslationPipeline:
             polished = (polished + source_lines)[:len(source_lines)]
 
         # Pass 3: qa review (chỉ áp suggestion nếu có)
+        qa = None
         try:
             qa = self.ja_translator.qa_review(
                 source_lines, polished, glossary_terms=glossary,
@@ -903,12 +904,13 @@ class TranslationPipeline:
                         polished = raw_trans  # fallback giữ nguyên rough
 
                 # Validate & commit
+                raw_fallback = raw_trans if not self.ja_translator else rough
                 if not self.validator.validate_window_content(source_lines, polished):
                     logger.warning(f"Recovery[{dw['window_index']}]: polished content failed validation, trying raw")
-                    if not self.validator.validate_window_content(source_lines, raw_trans):
+                    if not self.validator.validate_window_content(source_lines, raw_fallback):
                         logger.error(f"Recovery[{dw['window_index']}]: both raw & polished failed validation, skipping")
                         continue
-                    polished = raw_trans
+                    polished = raw_fallback
 
                 try:
                     self.db.commit_window(project_id, dw['window_id'], dw['start_sub_index'], dw['end_sub_index'], polished)
@@ -937,7 +939,7 @@ class TranslationPipeline:
             return
 
         win_size = project['window_size']
-        scene_window_size = self.config.get('ja_context', {}).get('scene_review_size', 40)
+        scene_window_size = self.config.get('ja_context', {}).get('scene_review_size', 36)
 
         # Gom translation-windows thành scene
         scenes = []
@@ -963,11 +965,7 @@ class TranslationPipeline:
 
         for scene_idx, scene_items in enumerate(scenes):
             # Lấy context của scene này (Worker A đã tạo)
-            start_pos = scene_items[0].get('id', 0) - 1  # pos = id - 1 trong schema
             # Tính pos dựa trên thứ tự: items đã sort theo sub_index
-            # An toàn hơn: dùng chỉ số trong list
-            # (giả định all_items đã sort theo sub_index)
-            # start_pos = chỉ số của item đầu tiên
             try:
                 first_sub = scene_items[0]['sub_index']
                 # Tìm pos = chỉ số item trong all_items
@@ -987,9 +985,9 @@ class TranslationPipeline:
                     "summary": ctx.get("summary", ""),
                 }
 
-            # Gom source + translation
-            sources = [it['original_text'] for it in scene_items if it.get('translated_text')]
-            translations = [it['translated_text'] for it in scene_items if it.get('translated_text')]
+            # Gom source + translation (giữ nguyên index, không filter empty strings)
+            sources = [it['original_text'] for it in scene_items if 'translated_text' in it and it.get('translated_text') is not None]
+            translations = [it['translated_text'] for it in scene_items if 'translated_text' in it and it.get('translated_text') is not None]
             if not sources:
                 continue
             if len(sources) != len(translations):

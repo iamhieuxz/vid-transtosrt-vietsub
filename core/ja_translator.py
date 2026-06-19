@@ -88,7 +88,7 @@ Bản dịch "thô" (ROUGH) cần được trau chuốt cho tự nhiên, nhất 
 QUY TẮC ĐẦU RA:
 - Trả về JSON array hợp lệ, không kèm text ngoài JSON.
 - Số phần tử đúng bằng số dòng đầu vào.
-- Mỗi phần tử: {{"index": <số thứ tự 1-based>, "translation": "<bản dịch>"}}.
+- Mỗi phần tử: {{"id": <số thứ tự 1-based>, "text": "<bản dịch>"}}.
 
 TUYỆT ĐỐI KHÔNG:
 - Bỏ sót hoặc gộp nhiều dòng thành một.
@@ -315,9 +315,9 @@ class JaTranslator:
             for item in parsed:
                 if not isinstance(item, dict):
                     continue
-                idx = item.get("index")
+                idx = item.get("id")
                 if idx == j + 1:
-                    match = item.get("translation") or item.get("text")
+                    match = item.get("text") or item.get("translation")
                     break
             out.append(match.strip() if match else rough_translations[j])
         return out

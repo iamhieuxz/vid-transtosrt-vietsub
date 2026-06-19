@@ -115,7 +115,7 @@ class JaContextAnalyzer:
         Timeout mỗi call model (giây).
     """
 
-    def __init__(self, translator, context_window_size: int = 20, timeout_per_window: int = 60):
+    def __init__(self, translator, context_window_size: int = 18, timeout_per_window: int = 60):
         self.translator = translator
         self.context_window_size = context_window_size
         self.timeout_per_window = timeout_per_window

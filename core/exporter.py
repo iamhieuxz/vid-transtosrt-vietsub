@@ -204,7 +204,6 @@ class Exporter:
         subs = pysrt.SubRipFile()
         for idx, item in enumerate(sorted_items, start=1):
             if use_original:
-                # Xuất file gốc - không dịch
                 text = item.get('original_text', '')
             else:
                 text = item.get('translated_text') or ''
@@ -218,7 +217,8 @@ class Exporter:
             sub = SubRipItem(index=idx, start=start, end=end, text=text)
             subs.append(sub)
 
-        subs.save(output_path, encoding='utf-8')
+        # Write with UTF-8-sig (BOM) for Windows compatibility
+        subs.save(output_path, encoding='utf-8-sig')
 
         if untranslated_count > 0:
             logger.warning(f"{STATUS_ICONS['warning']} {untranslated_count} subtitle(s) were not translated and are marked as [UNTRANSLATED]")
