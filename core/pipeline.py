@@ -277,7 +277,10 @@ class TranslationPipeline:
             recovered = self._recover_dead_letters(project_id, project)
             dead = self.db.count_dead_letter(project_id)
 
-        # ja_trans2: batch refine SAU khi pipeline hoàn tất
+        # Export SRT sau khi pipeline hoàn tất (trước ja_trans2 để luôn có output)
+        self._export_to_folder(project_id, project)
+
+        # ja_trans2: batch refine SAU khi export đầu tiên
         # Chỉ chạy nếu là source JA và ja_translator2 đã init
         refined_stats = None
         if self.ja_translator2 is not None and self._is_japanese_source:
@@ -291,6 +294,8 @@ class TranslationPipeline:
                 f"{refined_stats['translated']}/{refined_stats['total']} translated, "
                 f"{refined_stats['refined']}/{refined_stats['total']} refined"
             )
+            # Export lại sau khi refine để ghi đè
+            self._export_to_folder(project_id, project)
 
         pending = self.db.count_pending_windows(project_id)
         dead = self.db.count_dead_letter(project_id)
@@ -301,9 +306,6 @@ class TranslationPipeline:
             self.db.update_project_status(project_id, 'completed')
         else:
             self.db.update_project_status(project_id, 'partial')
-
-        # Export to output folder with project name
-        self._export_to_folder(project_id, project)
 
         self._print_summary(project_id, pending, dead, refined_stats=refined_stats)
         console.print(f"\n{STATUS_ICONS['complete']} [green]Pipeline finished successfully![/green]")
