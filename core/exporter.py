@@ -21,55 +21,57 @@ STATUS_ICONS = {
 }
 
 
-def get_output_folder(base_output_path: str, project_name: str) -> str:
-    """
-    Tạo folder output theo cấu trúc:
-    <base_folder>/<project_name>/
-    
-    Ví dụ: E:/trans-video/test.srt + "test-video" 
-            -> E:/trans-video/test-video/
-    """
-    base_dir = os.path.dirname(base_output_path)
-    folder_name = _sanitize_folder_name(project_name)
-    output_folder = os.path.join(base_dir, folder_name)
-    
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder, exist_ok=True)
-        logger.info(f"Created output folder: {output_folder}")
-    
+def get_output_folder(base_output_folder: str, project_name: str) -> str:
+    """Resolve folder output: <video_folder>/<project_name>/"""
+    folder = _sanitize_folder_name(project_name)
+    video_folder = os.path.dirname(base_output_folder)
+    output_folder = os.path.join(video_folder, folder)
+    os.makedirs(output_folder, exist_ok=True)
+    logger.info(f"Output folder: {output_folder}")
     return output_folder
 
 
 def _sanitize_folder_name(name: str) -> str:
     """Loại bỏ ký tự không hợp lệ cho tên folder."""
     import re
-    # Thay thế các ký tự không hợp lệ bằng underscore
     sanitized = re.sub(r'[<>:"/\\|?*]', '_', name)
-    # Loại bỏ khoảng trắng thừa ở đầu/cuối
     sanitized = sanitized.strip()
     return sanitized if sanitized else "output"
 
 
-def get_output_paths(base_output_path: str, project_name: str) -> dict:
+def resolve_srt_path(base_output_folder: str, project_name: str) -> str:
     """
-    Trả về dict chứa đường dẫn các file output:
-    - folder: đường dẫn folder output
-    - translated: file SRT đích (đích)
-    - original: file SRT nguồn (gốc)
-    
-    Ví dụ input: base_output="E:/trans-video/test.srt", project_name="test-video"
-    Kết quả:
-      folder: E:/trans-video/test-video/
-      translated: E:/trans-video/test-video/test.srt
-      original: E:/trans-video/test-video/test-origin.srt
+    Resolve đường dẫn file SRT đích từ folder output + project name.
+
+    Logic: whisper tạo  <video_folder>/<video>_whisper.srt
+           output folder = <video_folder>/              (user chọn)
+           => output SRT = <video_folder>/<project_name>.srt
     """
-    output_folder = get_output_folder(base_output_path, project_name)
-    base_name = os.path.splitext(os.path.basename(base_output_path))[0]
-    
+    folder = _sanitize_folder_name(project_name)
+    output_dir = os.path.join(os.path.dirname(base_output_folder), folder)
+    os.makedirs(output_dir, exist_ok=True)
+    return os.path.join(output_dir, f"{folder}.srt")
+
+
+def get_output_paths(base_output_folder: str, project_name: str) -> dict:
+    """
+    Trả về dict chứa đường dẫn các file output.
+
+    Logic: whisper tạo  <video_folder>/<video>_whisper.srt
+           output folder = <video_folder>/              (user chọn)
+           => folder     = <video_folder>/<project_name>/
+           => translated = <video_folder>/<project_name>/<project_name>.srt
+           => original  = <video_folder>/<project_name>/<project_name>_whisper.srt
+    """
+    folder = _sanitize_folder_name(project_name)
+    video_folder = os.path.dirname(base_output_folder)
+    output_dir = os.path.join(video_folder, folder)
+    os.makedirs(output_dir, exist_ok=True)
+
     return {
-        'folder': output_folder,
-        'translated': os.path.join(output_folder, f"{base_name}.srt"),
-        'original': os.path.join(output_folder, f"{base_name}-origin.srt"),
+        'folder': output_dir,
+        'translated': os.path.join(output_dir, f"{folder}.srt"),
+        'original': os.path.join(output_dir, f"{folder}_whisper.srt"),
     }
 
 
@@ -182,9 +184,13 @@ class Exporter:
             self._write_srt(items, output_path, use_original=True)
             console.print(f"{STATUS_ICONS['success']} [green]Original SRT:[/green] {output_path}")
 
-    def export_incremental(self, project_id: int, output_path: str):
-        """Xuat hien tai (checkpoint) an toan trong da luong."""
+    def export_incremental(self, project_id: int, folder_path: str, project_name: str):
+        """Xuat checkpoint an toan trong da luong.
+
+        Resolve: <folder_path>/ -> <project_name>/<project_name>.srt
+        """
         with self._lock:
+            output_path = resolve_srt_path(folder_path, project_name)
             tmp_path = output_path + ".tmp"
             items = self.db.get_all_items(project_id)
             self._write_srt(items, tmp_path)

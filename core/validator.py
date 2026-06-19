@@ -55,7 +55,7 @@ class Validator:
 
         return True
 
-    def _detect_repetition(self, translations: List[str], threshold: float = 0.5) -> bool:
+    def _detect_repetition(self, translations: List[str], threshold: float = 0.7) -> bool:
         """Phát hiện text lặp lại trong bản dịch."""
         if len(translations) < 2:
             return False
@@ -65,28 +65,30 @@ class Validator:
             if not trans.strip():
                 continue
             trans_lower = trans.lower()
-            # Kiểm tra trùng lặp với dòng khác
+            # Bỏ qua function words/phrases phổ biến trong Vietnamese subs
+            # e.g. "bạn", "tôi", "có", "không", "là", "gì", "vậy", "ơi"
+            common_words = {'bạn', 'tôi', 'có', 'không', 'là', 'gì', 'vậy', 'ơi',
+                            'của', 'trong', 'với', 'cho', 'và', 'như', 'thì', 'đang',
+                            'mà', 'để', 'ra', 'vào', 'nào', 'sao', 'hả', 'à', 'ạ'}
+            words = trans.split()
+            meaningful_words = {re.sub(r'[^\w]', '', w.lower()) for w in words
+                               if len(w) > 1 and re.sub(r'[^\w]', '', w.lower()) not in common_words}
+
             for j, other in enumerate(translations):
                 if i != j and other.strip():
-                    # Nếu 2 dòng giống nhau > 50%
-                    if self._similarity(trans_lower, other.lower()) > threshold:
-                        repeat_count += 1
-                        break
-            # Kiểm tra từ lặp trong cùng 1 dòng
-            words = trans.split()
-            if len(words) >= 4:
-                word_counts = {}
-                for w in words:
-                    w_clean = re.sub(r'[^\w]', '', w.lower())
-                    if len(w_clean) > 2:
-                        word_counts[w_clean] = word_counts.get(w_clean, 0) + 1
-                max_repeat = max(word_counts.values()) if word_counts else 0
-                if max_repeat >= len(words) * 0.4:
-                    logger.warning(f"Suspicious word repetition in: {trans[:50]}...")
-                    repeat_count += 1
-                    break
+                    other_lower = other.lower()
+                    other_words = other.split()
+                    other_meaningful = {re.sub(r'[^\w]', '', w.lower()) for w in other_words
+                                        if len(w) > 1 and re.sub(r'[^\w]', '', w.lower()) not in common_words}
+                    # Chỉ flag nếu ≥3 từ có nghĩa GIỐNG NHAU (trùng phạm vi > 70%)
+                    if len(meaningful_words) >= 3 and len(other_meaningful) >= 3:
+                        intersection = meaningful_words & other_meaningful
+                        sim = len(intersection) / max(len(meaningful_words), len(other_meaningful))
+                        if sim > threshold:
+                            repeat_count += 1
+                            break
 
-        return repeat_count >= len(translations) * 0.3
+        return repeat_count >= 3  # ≥3 cặp dòng trùng nhau → mới flag
 
     def _similarity(self, s1: str, s2: str) -> float:
         """Tính độ giống nhau giữa 2 chuỗi."""

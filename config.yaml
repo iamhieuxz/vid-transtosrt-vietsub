@@ -7,7 +7,7 @@ whisper:
   vad_filter: true
   min_silence_duration_ms: 500
 project:
-  name: test-subbbjp
+  name: jp-test
   source_lang: Japanese
   target_lang: Vietnamese
   input_srt: E:/trans-video/test-sub-nhat/jp-test.mp4

@@ -263,11 +263,6 @@ class TranslationPipeline:
                     f"{STATUS_ICONS['warning']} [yellow]No context available, "
                     f"running with ZH pipeline + batch refine[/yellow]"
                 )
-            if stats['completed'] == 0 and stats['total'] > 0:
-                console.print(
-                    f"{STATUS_ICONS['warning']} [yellow]No context available, "
-                    f"running baseline 3-pass without xưng hô mapping[/yellow]"
-                )
 
         console.print(f"{STATUS_ICONS['processing']} [cyan]Processing translation queue...[/cyan]")
         if self.num_workers > 1:
@@ -293,7 +288,8 @@ class TranslationPipeline:
             )
             console.print(
                 f"{STATUS_ICONS['success']} Batch refine done: "
-                f"{refined_stats['refined']}/{refined_stats['total']} lines refined"
+                f"{refined_stats['translated']}/{refined_stats['total']} translated, "
+                f"{refined_stats['refined']}/{refined_stats['total']} refined"
             )
 
         pending = self.db.count_pending_windows(project_id)
@@ -362,10 +358,17 @@ class TranslationPipeline:
         table.add_row("Pending", str(pending))
         table.add_row("Failed (dead letter)", str(dead))
         if refined_stats:
-            table.add_row(
-                "Batch refined (ja_trans2)",
-                f"{refined_stats['refined']}/{refined_stats['total']} lines"
-            )
+            if refined_stats.get('translated', 0) > 0:
+                table.add_row(
+                    "Batch ja_trans2",
+                    f"{refined_stats['translated']} translated, "
+                    f"{refined_stats['refined']} refined"
+                )
+            else:
+                table.add_row(
+                    "Batch ja_trans2 refined",
+                    f"{refined_stats['refined']}/{refined_stats['total']}"
+                )
         console.print(table)
 
     def _parse_srt(self, project_id, input_path):
@@ -445,7 +448,7 @@ class TranslationPipeline:
                     completed += 1
                     checkpoint_cnt += 1
                     if checkpoint_cnt % self.checkpoint_interval == 0:
-                        self.exporter.export_incremental(project_id, project['output_srt'])
+                        self.exporter.export_incremental(project_id, project['output_srt'], project['name'])
                         logger.info(f"{STATUS_ICONS['success']} Checkpoint at {checkpoint_cnt} windows")
                 else:
                     failed += 1
@@ -515,7 +518,7 @@ class TranslationPipeline:
                             completed_cnt += 1
                             checkpoint_cnt += 1
                             if checkpoint_cnt % self.checkpoint_interval == 0:
-                                self.exporter.export_incremental(project_id, project['output_srt'])
+                                self.exporter.export_incremental(project_id, project['output_srt'], project['name'])
                         else:
                             failed_cnt += 1
                             with self.db._get_connection() as conn:
@@ -553,12 +556,25 @@ class TranslationPipeline:
                         self.db.mark_task_failed(win_id, str(e), retry_count_increment=True)
                         return False
                 else:
-                    logger.warning(f"{STATUS_ICONS['warning']} Window {win_idx} failed validation")
-                    self.db.mark_task_failed(win_id, "Validation failed", retry_count_increment=True)
-                    return False
+                    # Validation fail nhưng LLM đã trả output hợp lệ
+                    # Commit trực tiếp — KHÔNG retry (model + validator cùng fail → retry vô hạn)
+                    logger.warning(f"{STATUS_ICONS['warning']} Window {win_idx} failed validation, committing as-is")
+                    try:
+                        self.db.commit_window(project_id, win_id, start_sub, end_sub, translations)
+                        self._save_to_tm(project, source_lines, translations)
+                        return True
+                    except Exception as e:
+                        logger.error(f"{STATUS_ICONS['error']} commit_window (validation-fallback) failed: {e}")
+                        return False
             else:
-                self.db.mark_task_failed(win_id, "LLM output invalid", retry_count_increment=True)
-                return False
+                # LLM fail hoàn toàn → vẫn commit original text thay vì retry vô hạn
+                logger.warning(f"{STATUS_ICONS['warning']} Window {win_idx}: LLM returned None, committing original text")
+                try:
+                    self.db.commit_window(project_id, win_id, start_sub, end_sub, source_lines)
+                    return True
+                except Exception as e:
+                    logger.error(f"{STATUS_ICONS['error']} commit original text failed: {e}")
+                    return False
 
     def _translate_window(self, project_id, task, context, project):
         orig_lines_with_ids = [l.strip() for l in task['original_text'].split('\n') if l.strip()]
@@ -928,9 +944,12 @@ class TranslationPipeline:
                 if not self.validator.validate_window_content(source_lines, polished):
                     logger.warning(f"Recovery[{dw['window_index']}]: polished content failed validation, trying raw")
                     if not self.validator.validate_window_content(source_lines, raw_fallback):
-                        logger.error(f"Recovery[{dw['window_index']}]: both raw & polished failed validation, skipping")
-                        continue
-                    polished = raw_fallback
+                        # Validation liên tục fail → commit raw translation để không mất dữ liệu
+                        logger.warning(f"Recovery[{dw['window_index']}]: all validation failed, committing raw translation")
+                        polished = raw_fallback
+                        if not self.validator.validate_window_content(source_lines, polished):
+                            # Raw cũng fail validation nghiêm trọng, vẫn commit để có output
+                            logger.error(f"Recovery[{dw['window_index']}]: raw also failed validation, committing as-is")
 
                 try:
                     self.db.commit_window(project_id, dw['window_id'], dw['start_sub_index'], dw['end_sub_index'], polished)

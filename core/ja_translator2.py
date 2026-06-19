@@ -6,7 +6,8 @@ Khác với ja_translator.py (3-pass cũ fail liên tục):
 
 Flow:
   Pipeline chạy ZH → commit DB (status='completed')
-  → ja_trans2 chạy batch-refine trên output đã commit
+  → ja_trans2: translate NULL items (vòng 2)
+  → ja_trans2: refine completed items (polish)
   → ghi đè lại translated_text
 """
 
@@ -112,7 +113,7 @@ class JaTranslator2:
     translator : TranslatorService
         Ollama translator (dùng model ja hoặc default).
     batch_size : int
-        Số dòng mỗi batch refine (mặc định 20).
+        Số dòng mỗi batch (mặc định 20).
     """
 
     def __init__(self, translator, batch_size: int = 20):
@@ -134,7 +135,6 @@ class JaTranslator2:
 
         n = len(translated_lines)
 
-        # Build pairs block
         pairs = "\n".join(
             f"{i+1}. ORIGINAL: {s}\n   TRANSLATED: {t}"
             for i, (s, t) in enumerate(zip(source_lines, translated_lines))
@@ -171,76 +171,166 @@ class JaTranslator2:
                 except (ValueError, TypeError):
                     pass
 
-        # Fill missing with original
         result = [
             (out[i].strip() if out[i] else translated_lines[i])
             for i in range(n)
         ]
         return result
 
+    def translate_batch(
+        self,
+        source_lines: List[str],
+        temperature: float = 0.2,
+    ) -> List[str]:
+        """Translate một batch dòng chưa được dịch (JA → Vietnamese).
+
+        Dùng cùng model/prompt style như pipeline chính.
+        """
+        if not source_lines:
+            return []
+
+        n = len(source_lines)
+
+        prompt = f"""Translate {n} Japanese subtitles to Vietnamese.
+
+TRANSLATION RULES:
+- Keep natural, conversational Vietnamese suitable for subtitles
+- Use informal/friendly tone suitable for casual conversation
+- Keep character names as-is
+- Preserve sentence-final particles emotion (ね/よ/ぞ/かな/っす/ etc.)
+- Sino-Vietnamese false friends: 勉強 ≠ "cố gắng"; 汽車 ≠ "khí xa"
+
+OUTPUT FORMAT: Return a valid JSON array with exactly {n} elements.
+Each element: {{"id": <1-based number>, "text": "<Vietnamese translation>"}}
+Only output JSON, nothing else. Do NOT skip any line.
+
+SOURCE LINES:
+"""
+        for i, src in enumerate(source_lines, 1):
+            prompt += f"{i}. {src}\n"
+
+        try:
+            raw = self.translator.generate(prompt, temperature=temperature)
+        except Exception as e:
+            logger.warning(f"JaTranslator2.translate_batch: generate failed: {e}")
+            return source_lines
+
+        parsed = _safe_extract_json(raw)
+        if not isinstance(parsed, list) or len(parsed) != n:
+            logger.warning(f"JaTranslator2.translate_batch: invalid JSON, keeping original")
+            return source_lines
+
+        out: List[str] = [None] * n
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            idx = item.get("id")
+            if isinstance(idx, (int, str)):
+                try:
+                    j = int(idx) - 1
+                    if 0 <= j < n:
+                        out[j] = item.get("text") or item.get("translation")
+                except (ValueError, TypeError):
+                    pass
+
+        return [
+            (out[i].strip() if out[i] else source_lines[i])
+            for i in range(n)
+        ]
+
     def refine_project(self, db, project_id: int, progress_callback=None) -> dict:
-        """Refine toàn bộ project đã translate xong.
+        """Refine toàn bộ project.
 
-        Lấy tất cả items đã completed, gom thành batch {batch_size},
-        refine mỗi batch, cập nhật lại translated_text.
-
-        Parameters
-        ----------
-        db : Database
-        project_id : int
-        progress_callback : callable, optional
-            Callback(total_done, total) cho progress bar.
-
-        Returns
-        -------
-        dict
-            {{"total": N, "refined": M, "failed": F}}
+        2 bước:
+        1. Translate những dòng chưa dịch (NULL translated_text) — vòng 2
+        2. Refine những dòng đã dịch — polish
         """
         items = db.get_all_items(project_id)
-        # Chỉ refine những dòng đã có translated_text
-        pending = [
-            (i, it)
-            for i, it in enumerate(items)
-            if it.get('translated_text') and it.get('translated_text').strip()
-        ]
-        if not pending:
-            logger.info("JaTranslator2: no completed items to refine")
-            return {"total": 0, "refined": 0, "failed": 0}
 
-        total = len(pending)
+        # Phân loại: đã dịch vs chưa dịch
+        pending_refine = []
+        pending_translate = []
+        for i, it in enumerate(items):
+            trans = it.get('translated_text')
+            if trans and trans.strip():
+                pending_refine.append((i, it))
+            else:
+                pending_translate.append((i, it))
+
+        if not pending_refine and not pending_translate:
+            logger.info("JaTranslator2: no items to process")
+            return {"total": 0, "refined": 0, "translated": 0, "failed": 0}
+
+        total_refine = len(pending_refine)
+        total_translate = len(pending_translate)
+        total = total_refine + total_translate
         refined = 0
+        translated = 0
         failed = 0
 
-        logger.info(f"JaTranslator2: refining {total} items in batches of {self.batch_size}")
+        logger.info(
+            f"JaTranslator2: {total_translate} items to translate, "
+            f"{total_refine} items to refine"
+        )
 
-        # Gom theo thứ tự index
-        sources = [it['original_text'] for _, it in pending]
-        translated = [it['translated_text'] for _, it in pending]
+        # Bước 1: Translate những dòng chưa dịch
+        if pending_translate:
+            src_translate = [it['original_text'] for _, it in pending_translate]
+            for batch_start in range(0, len(src_translate), self.batch_size):
+                batch_end = min(batch_start + self.batch_size, len(src_translate))
+                batch = src_translate[batch_start:batch_end]
 
-        for batch_start in range(0, total, self.batch_size):
-            batch_end = min(batch_start + self.batch_size, total)
-            src_batch = sources[batch_start:batch_end]
-            trans_batch = translated[batch_start:batch_end]
+                translated_batch = self.translate_batch(batch)
+                for j, (global_idx, _) in enumerate(pending_translate[batch_start:batch_end]):
+                    item_id = items[global_idx]['id']
+                    db.update_item_translation(item_id, translated_batch[j])
 
-            refined_batch = self.refine(src_batch, trans_batch)
+                if translated_batch != batch:
+                    translated += len(translated_batch)
+                else:
+                    failed += len(translated_batch)
 
-            # Cập nhật DB
-            for j, (global_idx, _) in enumerate(pending[batch_start:batch_end]):
-                item_id = items[global_idx]['id']
-                db.update_item_translation(item_id, refined_batch[j])
+                if progress_callback:
+                    done = min(batch_end, total_translate) + total_refine
+                    progress_callback(done, total)
 
-            if refined_batch != trans_batch:
-                refined += len(refined_batch)
-            else:
-                failed += len(refined_batch)
+                logger.info(
+                    f"JaTranslator2: translate batch {batch_start//self.batch_size + 1} "
+                    f"({batch_start+1}-{batch_end}/{total_translate})"
+                )
 
-            if progress_callback:
-                progress_callback(batch_end, total)
+        # Bước 2: Refine những dòng đã dịch
+        if pending_refine:
+            sources = [it['original_text'] for _, it in pending_refine]
+            translated_list = [it['translated_text'] for _, it in pending_refine]
 
-            logger.debug(
-                f"JaTranslator2: batch {batch_start//self.batch_size + 1} "
-                f"({batch_start+1}-{batch_end}/{total}) refined"
-            )
+            for batch_start in range(0, total_refine, self.batch_size):
+                batch_end = min(batch_start + self.batch_size, total_refine)
+                src_batch = sources[batch_start:batch_end]
+                trans_batch = translated_list[batch_start:batch_end]
 
-        logger.info(f"JaTranslator2: done — {refined}/{total} lines refined")
-        return {"total": total, "refined": refined, "failed": total - refined}
+                refined_batch = self.refine(src_batch, trans_batch)
+
+                for j, (global_idx, _) in enumerate(pending_refine[batch_start:batch_end]):
+                    item_id = items[global_idx]['id']
+                    db.update_item_translation(item_id, refined_batch[j])
+
+                if refined_batch != trans_batch:
+                    refined += len(refined_batch)
+                else:
+                    failed += len(refined_batch)
+
+                if progress_callback:
+                    done = total_translate + batch_end
+                    progress_callback(done, total)
+
+                logger.info(
+                    f"JaTranslator2: refine batch {batch_start//self.batch_size + 1} "
+                    f"({batch_start+1}-{batch_end}/{total_refine})"
+                )
+
+        logger.info(
+            f"JaTranslator2: done — {translated}/{total_translate} translated, "
+            f"{refined}/{total_refine} refined"
+        )
+        return {"total": total, "refined": refined, "translated": translated, "failed": failed}

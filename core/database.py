@@ -88,7 +88,8 @@ class Database:
         c.execute('''CREATE TABLE IF NOT EXISTS glossary (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER, source_term TEXT, target_term TEXT, context_hint TEXT,
-            FOREIGN KEY(project_id) REFERENCES projects(id))''')
+            FOREIGN KEY(project_id) REFERENCES projects(id),
+            UNIQUE(project_id, source_term))''')
 
         c.execute('CREATE INDEX IF NOT EXISTS idx_subtitle_project ON subtitle_items(project_id, sub_index)')
         c.execute('CREATE INDEX IF NOT EXISTS idx_window_project ON windows(project_id, window_index)')
@@ -155,6 +156,15 @@ class Database:
                 c.execute("""INSERT OR REPLACE INTO subtitle_items (project_id, sub_index, start_time, end_time, original_text, status, translated_text)
                               VALUES (?,?,?,?,?,'pending', NULL)""",
                           (project_id, it['index'], it['start'], it['end'], it['text']))
+            conn.commit()
+
+    def update_item_translation(self, item_id: int, translated_text: str):
+        """Cập nhật translated_text cho một subtitle item."""
+        with self._get_connection() as conn:
+            conn.execute(
+                "UPDATE subtitle_items SET translated_text=?, status='translated' WHERE id=?",
+                (translated_text, item_id)
+            )
             conn.commit()
 
     def get_all_items(self, project_id):
@@ -337,8 +347,10 @@ class Database:
 
     def add_glossary_term(self, project_id, source, target, hint=''):
         with self._get_connection() as conn:
-            conn.execute("INSERT INTO glossary (project_id, source_term, target_term, context_hint) VALUES (?,?,?,?)",
-                         (project_id, source, target, hint))
+            conn.execute(
+                "INSERT OR IGNORE INTO glossary (project_id, source_term, target_term, context_hint) VALUES (?,?,?,?)",
+                (project_id, source, target, hint)
+            )
             conn.commit()
 
     # --- Window Contexts (JA 2-tier pipeline) ---
