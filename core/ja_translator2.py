@@ -115,7 +115,7 @@ class JaTranslator2:
         Số dòng mỗi batch (mặc định 20).
     """
 
-    def __init__(self, translator, batch_size: int = 20):
+    def __init__(self, translator, batch_size: int = 10):
         self.translator = translator
         self.batch_size = batch_size
 

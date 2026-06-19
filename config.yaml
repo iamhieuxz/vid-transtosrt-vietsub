@@ -66,4 +66,4 @@ ja_context:
   scene_review_size: 36
 ja_trans2:
   enabled: true
-  batch_size: 20
+  batch_size: 10
