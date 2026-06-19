@@ -33,21 +33,23 @@ class Validator:
             logger.error(f"Line count mismatch: {len(originals)} vs {len(translations)}")
             return False
 
-        for orig, trans in zip(originals, translations):
+        for i, (orig, trans) in enumerate(zip(originals, translations)):
             placeholders = re.findall(r'%[sd]|%[0-9]*[diouxXeEfFgGcrsab%]|\{[^}]+\}', orig)
             for ph in placeholders:
                 if ph not in trans:
                     logger.error(f"Missing placeholder '{ph}' in: {trans}")
                     return False
-            # Bắt cả 2 trường hợp: orig có nội dung nhưng trans trống, và cả 2 đều trống
             if not orig.strip() and not trans.strip():
                 logger.error(f"Both empty for subtitle index")
                 return False
             if orig.strip() and not trans.strip():
                 logger.error(f"Empty translation for: {orig}")
                 return False
+
+            # Truncate dòng quá dài (subtitles có giới hạn ~42 chars mỗi dòng)
             if len(orig) > 0 and len(trans) / len(orig) > 8:
-                logger.warning(f"Translation is too long: {orig} -> {trans[:50]}...")
+                logger.warning(f"Translation too long, truncating: {trans[:80]}...")
+                translations[i] = trans[:150]  # hard cap 150 chars
 
         if self._detect_repetition(translations):
             logger.error("Translation contains repetitive patterns")

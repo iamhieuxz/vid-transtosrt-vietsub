@@ -35,22 +35,21 @@ and refine the Vietnamese to sound like professional Vietnamese movie subtitles.
 
 
 _REFINE_TEMPLATE = """\
-You are a subtitle polisher. You receive {n} pairs of (Japanese ORIGINAL → Vietnamese TRANSLATION).
-Your task: read all pairs, then rewrite only the Vietnamese translations that need improvement.
+You are a subtitle editor. You receive {n} pairs of (Japanese ORIGINAL → Vietnamese TRANSLATION).
+Your task: fix ONLY clear errors. Do NOT rewrite lines that are already correct.
 
-PRIORITY FIXES:
-1. Inconsistent keigo/formality → make pronouns consistent across all {n} lines
-2. Romaji/katakana still present → replace with Vietnamese equivalent
-3. Sino-Vietnamese wrong meaning (e.g. 勉強 ≠ "cố gắng"; 汽車 ≠ "khí xa")
-4. Machine-translated tone → rewrite to sound natural in Vietnamese
-5. Sentence-final particles (ね/よ/ぞ/かな) → convey the emotion in Vietnamese
-6. Too short → expand naturally
-7. Too long → trim to subtitle length
+WHAT TO FIX (minimal edits only):
+1. Romaji/katakana leaked into Vietnamese → replace with Vietnamese equivalent (e.g. "Arigatou" → "Cảm ơn")
+2. Sino-Vietnamese wrong meaning: 勉強 ≠ "cố gắng"; 汽車 ≠ "khí xa"; 大丈夫 ≠ "đại trượng phu"
+3. Inconsistent pronouns/keigo across the {n} lines → align them
+4. Sentence-final particles emotion (ね/よ/ぞ/かな) missing in Vietnamese → add equivalent particle (nhé/nha/mà/thôi)
+5. Wrong word from context mismatch → fix to the right Vietnamese word
 
-KEEP UNCHANGED:
-- Character names, place names (or Vietnamese-subtitle style adaptations)
-- Common katakana already popular in Vietnam (キャンセル, セットアップ, etc.)
-- Lines that are already good — do NOT fix for the sake of fixing
+WHAT NOT TO DO:
+- Do NOT add new words, adjectives, or explanations
+- Do NOT expand short lines
+- Do NOT rewrite lines that are already correct
+- Keep output length ≤ input length
 
 OUTPUT FORMAT:
 - Return a valid JSON array with exactly {n} elements.
