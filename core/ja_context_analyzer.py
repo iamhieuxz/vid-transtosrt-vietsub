@@ -19,6 +19,7 @@ Dùng cùng ``TranslatorService`` với main pipeline (không cần thêm model)
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
@@ -98,6 +99,42 @@ def _safe_parse_json(text: str) -> Optional[dict]:
     return None
 
 
+def _validate_context_schema(result: dict) -> Optional[dict]:
+    """Validate đầy đủ schema cho context-window output từ LLM.
+
+    Trả về dict đã chuẩn hoá (default fill) nếu hợp lệ, None nếu không.
+    Yêu cầu: tất cả 5 field top-level phải có đúng kiểu.
+    """
+    if not isinstance(result, dict):
+        return None
+    # speakers: list[str]
+    speakers = result.get("speakers")
+    if not isinstance(speakers, list) or not all(isinstance(s, str) for s in speakers):
+        return None
+    # pronouns_map: dict[str, {self, other}] — cảnh 1 người có thể rỗng
+    pronouns_map = result.get("pronouns_map", {})
+    if not isinstance(pronouns_map, dict):
+        return None
+    for pair, mapping in pronouns_map.items():
+        if not isinstance(mapping, dict):
+            return None
+        if not (isinstance(mapping.get("self"), (type(None), str))
+                and isinstance(mapping.get("other"), (type(None), str))):
+            return None
+    # tone, setting, summary: str
+    for key in ("tone", "setting", "summary"):
+        val = result.get(key)
+        if not isinstance(val, str):
+            return None
+    return {
+        "speakers": speakers,
+        "pronouns_map": pronouns_map,
+        "tone": result["tone"],
+        "setting": result["setting"],
+        "summary": result["summary"],
+    }
+
+
 # -----------------------------------------------------------------------------
 # Worker A
 # -----------------------------------------------------------------------------
@@ -135,11 +172,15 @@ class JaContextAnalyzer:
         windows = []
         for i in range(0, len(items), ctx_size):
             chunk = items[i:i + ctx_size]
+            lines = [it["original_text"] for it in chunk]
+            # Hash nội dung để detect cache hit THẬT SỰ (không bị lệch khi user edit SRT)
+            content_hash = hashlib.sha1("\n".join(lines).encode("utf-8")).hexdigest()[:16]
             windows.append({
                 "context_window_index": i // ctx_size,
                 "start_pos": i,
                 "end_pos": i + len(chunk) - 1,
-                "lines": [it["original_text"] for it in chunk],
+                "lines": lines,
+                "content_hash": content_hash,
             })
 
         # Check xem context nào đã có rồi (cache hit)
@@ -160,8 +201,11 @@ class JaContextAnalyzer:
 
         for w in windows:
             idx = w["context_window_index"]
-            # Skip nếu đã completed
-            if idx in existing and existing[idx]["status"] == "completed":
+            # Cache hit THẬT SỰ: status completed + hash nội dung khớp
+            # (nếu user edit SRT, hash sẽ khác → tự re-analyze)
+            cached = existing.get(idx)
+            if (cached and cached["status"] == "completed"
+                    and cached.get("content_hash") == w["content_hash"]):
                 continue
             try:
                 result = self._analyze_one_window(w["lines"])
@@ -169,14 +213,22 @@ class JaContextAnalyzer:
                     db.mark_context_failed(project_id, idx, "Empty/invalid JSON")
                     stats["failed"] += 1
                     continue
+                # Validate schema đầy đủ — tránh lưu JSON rỗng/thiếu field
+                validated = _validate_context_schema(result)
+                if validated is None:
+                    db.mark_context_failed(project_id, idx, "Schema validation failed")
+                    stats["failed"] += 1
+                    logger.debug(f"Context-window {idx}: schema invalid -> retry next run")
+                    continue
                 db.save_window_context(
                     project_id, idx, w["start_pos"], w["end_pos"],
-                    speakers_json=json.dumps(result.get("speakers", []), ensure_ascii=False),
-                    pronouns_map=json.dumps(result.get("pronouns_map", {}), ensure_ascii=False),
-                    tone=result.get("tone", "unknown"),
-                    setting=result.get("setting", "unknown"),
-                    summary=result.get("summary", ""),
+                    speakers_json=json.dumps(validated["speakers"], ensure_ascii=False),
+                    pronouns_map=json.dumps(validated["pronouns_map"], ensure_ascii=False),
+                    tone=validated["tone"],
+                    setting=validated["setting"],
+                    summary=validated["summary"],
                     status="completed",
+                    content_hash=w["content_hash"],
                 )
                 stats["completed"] += 1
                 logger.debug(f"Context-window {idx}: OK")

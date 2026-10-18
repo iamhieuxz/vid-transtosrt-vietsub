@@ -110,9 +110,15 @@ class Database:
             summary TEXT,
             status TEXT DEFAULT 'pending',
             error_message TEXT,
+            content_hash TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(project_id, context_window_index))''')
         c.execute('CREATE INDEX IF NOT EXISTS idx_ctx_project ON window_contexts(project_id, context_window_index)')
+        # shortcut: thêm column content_hash cho DB cũ (chỉ chạy khi upgrade, idempotent)
+        c.execute("PRAGMA table_info(window_contexts)")
+        cols = [row[1] for row in c.fetchall()]
+        if 'content_hash' not in cols:
+            c.execute("ALTER TABLE window_contexts ADD COLUMN content_hash TEXT")
 
         conn.commit()
         conn.close()
@@ -367,20 +373,20 @@ class Database:
     # --- Window Contexts (JA 2-tier pipeline) ---
     def save_window_context(self, project_id, context_window_index, start_pos, end_pos,
                             speakers_json, pronouns_map, tone, setting, summary,
-                            status='completed'):
+                            status='completed', content_hash=None):
         """Lưu hoặc update context summary cho 1 context-window."""
         with self._get_connection() as conn:
             conn.execute('''INSERT INTO window_contexts
                             (project_id, context_window_index, start_pos, end_pos,
-                             speakers_json, pronouns_map, tone, setting, summary, status)
-                            VALUES (?,?,?,?,?,?,?,?,?,?)
+                             speakers_json, pronouns_map, tone, setting, summary, status, content_hash)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?)
                             ON CONFLICT(project_id, context_window_index) DO UPDATE SET
                             start_pos=excluded.start_pos, end_pos=excluded.end_pos,
                             speakers_json=excluded.speakers_json, pronouns_map=excluded.pronouns_map,
                             tone=excluded.tone, setting=excluded.setting, summary=excluded.summary,
-                            status=excluded.status, error_message=NULL''',
+                            status=excluded.status, content_hash=excluded.content_hash, error_message=NULL''',
                          (project_id, context_window_index, start_pos, end_pos,
-                          speakers_json, pronouns_map, tone, setting, summary, status))
+                          speakers_json, pronouns_map, tone, setting, summary, status, content_hash))
             conn.commit()
 
     def get_window_context(self, project_id, context_window_index):
