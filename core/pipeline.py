@@ -536,6 +536,23 @@ class TranslationPipeline:
                  for s in subs]
         if not items:
             raise ValueError(f"{STATUS_ICONS['error']} No subtitle items found in: {input_path}")
+
+        # Sub duration splitter: chia sub dài thành nhiều sub ngắn theo dấu câu
+        # (vd: sub 9 phút Whisper output → split thành nhiều sub theo 。/！/?)
+        # Không gom sub — chỉ tách sub dài ra nhiều sub ngắn.
+        split_enabled = self.config.get('pipeline', {}).get('split_long_subs', True)
+        if split_enabled:
+            from .sub_splitter import split_srt_items
+            max_dur = self.config.get('pipeline', {}).get('sub_max_duration_ms', 6000)
+            original_count = len(items)
+            items = split_srt_items(items, max_duration_ms=max_dur)
+            if len(items) != original_count:
+                console.print(
+                    f"{STATUS_ICONS['success']} [green]Split "
+                    f"{original_count} → {len(items)} subs "
+                    f"(max {max_dur}ms)[/green]"
+                )
+
         self.db.save_subtitle_items(project_id, items)
         self.db.update_project_status(project_id, 'parsed', len(items))
         console.print(f"{STATUS_ICONS['success']} [green]Parsed {len(items)} subtitle items[/green]")

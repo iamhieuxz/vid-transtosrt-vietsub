@@ -54,6 +54,8 @@ pipeline:
   heartbeat_timeout: 600
   circuit_breaker_threshold: 5
   circuit_breaker_cooldown: 60
+  split_long_subs: true
+  sub_max_duration_ms: 6000
 model:
   name: huihui_ai/qwen3-abliterated:8b-v2
   ollama_url: http://localhost:11434/api/generate
