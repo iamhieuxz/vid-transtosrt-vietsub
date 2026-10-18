@@ -36,3 +36,7 @@ subtitle_translator.log
 models/
 *.bin
 .cache/
+
+# Backup snapshots from refactor
+.backups/
+.code_review_log.md

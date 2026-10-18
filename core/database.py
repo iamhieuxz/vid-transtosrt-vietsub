@@ -191,11 +191,12 @@ class Database:
             conn.commit()
             return conn.execute("SELECT id FROM windows WHERE project_id=? AND window_index=?", (project_id, window_index)).fetchone()['id']
 
-    def claim_task(self, project_id):
+    def claim_task(self, project_id, max_retries: int = 3):
         with self._get_connection() as conn:
             try:
                 row = conn.execute('''SELECT * FROM windows WHERE project_id=? AND status IN ('pending','failed')
-                                      AND retry_count < 3 ORDER BY window_index LIMIT 1''', (project_id,)).fetchone()
+                                      AND retry_count < ? ORDER BY window_index LIMIT 1''',
+                                   (project_id, max_retries)).fetchone()
                 if not row:
                     return None
                 now = time.time()
@@ -246,10 +247,10 @@ class Database:
                 conn.execute("UPDATE windows SET status='dead_letter', processing_started_at=NULL WHERE id=?", (window_id,))
                 conn.commit()
 
-    def count_pending_windows(self, project_id):
+    def count_pending_windows(self, project_id, max_retries: int = 3):
         with self._get_connection() as conn:
-            return conn.execute('''SELECT COUNT(*) FROM windows WHERE project_id=? AND status IN ('pending','processing','failed') AND retry_count<3''',
-                                (project_id,)).fetchone()[0]
+            return conn.execute('''SELECT COUNT(*) FROM windows WHERE project_id=? AND status IN ('pending','processing','failed') AND retry_count<?''',
+                                (project_id, max_retries)).fetchone()[0]
 
     def count_dead_letter(self, project_id):
         with self._get_connection() as conn:
@@ -280,11 +281,21 @@ class Database:
             conn.commit()
 
     def recover_stuck_tasks(self, project_id, timeout_seconds=600):
+        """Reset task kẹt quá timeout, có cộng dồn retry_count để tránh loop vô hạn
+        nếu stuck do lỗi runtime (không phải LLM timeout).
+
+        Stuck timeout ≠ lỗi LLM — có thể do model quá tải, GPU OOM, network blip.
+        Đánh dấu error đặc trưng, retry_count tăng → max_retries sẽ loại vào dead letter.
+        """
         threshold = time.time() - timeout_seconds
         with self._get_connection() as conn:
-            conn.execute('''UPDATE windows SET status='pending', processing_started_at=NULL
+            conn.execute('''UPDATE windows SET status='pending',
+                            retry_count=retry_count+1,
+                            error_message='stuck_timeout',
+                            processing_started_at=NULL
                             WHERE project_id=? AND status='processing'
-                            AND processing_started_at IS NOT NULL AND processing_started_at < ?''',
+                            AND processing_started_at IS NOT NULL
+                            AND processing_started_at < ?''',
                          (project_id, threshold))
             conn.commit()
 
@@ -415,3 +426,11 @@ class Database:
                                    WHERE project_id=? ORDER BY context_window_index''',
                                 (project_id,)).fetchall()
             return [dict(r) for r in rows]
+
+    def get_context_window(self, project_id, context_window_index):
+        """Lấy 1 context-window theo index. Tra ve None neu khong co."""
+        with self._get_connection() as conn:
+            row = conn.execute('''SELECT * FROM window_contexts
+                                   WHERE project_id=? AND context_window_index=?''',
+                                (project_id, context_window_index)).fetchone()
+            return dict(row) if row else None
