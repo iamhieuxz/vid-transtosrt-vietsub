@@ -63,12 +63,15 @@ QUY TẮC ĐẦU RA:
 - Mỗi dòng chỉ chứa bản dịch tương ứng, không đánh số, không ghi chú.
 - Giữ nguyên xuống dòng giữa các dòng đầu vào.
 - KHÔNG viết lại nguyên văn câu gốc, KHÔNG thêm giải thích.
+- Khi gặp tên riêng, PHẢI dùng canonical trong TEN RIENG (không tự sáng tạo).
 
 TUYỆT ĐỐI KHÔNG:
 - Bỏ sót hoặc gộp nhiều dòng thành một.
 - Trả về câu gốc khi chưa dịch.
 - Dùng ký tự lạ (emoji, ký tự control) trong bản dịch.
+- Tự sáng tạo tên riêng (vd: 匠 KHÔNG phải "Craft", あゆみ KHÔNG phải "Aya").
 {glossary_block}
+{character_block}
 Các dòng cần dịch (đã đánh số):
 {lines}
 """
@@ -84,6 +87,7 @@ Bản dịch "thô" (ROUGH) cần được trau chuốt cho tự nhiên, nhất 
 2. Câu thoại nghe như người Việt nói, không "dịch máy".
 3. Giữ đúng sắc thái cảm xúc (ngạc nhiên, giận, mỉa mai...).
 4. Nếu ROUGH còn sót romaji/kana onomatopoeia, dịch lại sang tiếng Việt.
+5. Khi gặp tên riêng, dùng canonical trong TEN RIENG (không tự sáng tạo).
 {context_block}
 QUY TẮC ĐẦU RA:
 - Trả về JSON array hợp lệ, không kèm text ngoài JSON.
@@ -93,7 +97,9 @@ QUY TẮC ĐẦU RA:
 TUYỆT ĐỐI KHÔNG:
 - Bỏ sót hoặc gộp nhiều dòng thành một.
 - Trả về câu gốc khi chưa dịch.
+- Tự sáng tạo tên riêng (vd: 匠 KHÔNG phải "Craft", あゆみ KHÔNG phải "Aya").
 {glossary_block}
+{character_block}
 Dữ liệu (ORIGINAL là câu gốc, ROUGH là bản dịch thô):
 {pairs}
 """
@@ -111,11 +117,13 @@ QUY TẮC:
 - ok=true nếu bản dịch đúng nghĩa, tự nhiên, không có romaji/kana sót.
 - ok=false nếu lệch nghĩa, bỏ sót particle, còn romaji/kana onomatopoeia, hoặc quá máy móc.
 - Nếu xưng hô trong TRANSLATION không khớp với bản đồ pronouns_map ở context, đánh ok=false.
+- Nếu tên riêng trong TRANSLATION không khớp TEN RIENG (vd: 匠 = Takumi, あゆみ = Ayumi), đánh ok=false.
 
 TUYỆT ĐỐI KHÔNG:
 - Bỏ sót dòng nào trong danh sách.
 - Trả về text ngoài JSON.
 {glossary_block}
+{character_block}
 Danh sách cần review:
 {pairs}
 """
@@ -135,6 +143,31 @@ def _render_glossary(glossary_terms) -> str:
             line += f" (context: {t['context_hint']})"
         lines.append(line)
     return "MANDATORY GLOSSARY:\n" + "\n".join(lines) + "\n\n"
+
+
+def _render_character_block(character_names) -> str:
+    """Render character_names từ config thành block inject vào prompt.
+
+    Mục đích: LLM biết dùng canonical cho tên riêng (VD: 匠 -> Takumi,
+    KHÔNG tự sáng tạo "Craft"; あゆみ -> Ayumi, KHÔNG "Aya").
+    """
+    if not character_names:
+        return ""
+    lines = []
+    for entry in character_names:
+        canonical = entry.get('canonical', '').strip()
+        aliases = entry.get('aliases', []) or []
+        if not canonical or not aliases:
+            continue
+        # Dùng alias JA đầu tiên làm source_term
+        ja_aliases = [a for a in aliases
+                      if re.match(r'[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff]', a)]
+        source = ja_aliases[0] if ja_aliases else canonical
+        line = f"- {source} -> {canonical}"
+        lines.append(line)
+    if not lines:
+        return ""
+    return "TEN RIENG BAT BUOC (giu nguyen, KHONG tu y dich/sang tao):\n" + "\n".join(lines) + "\n\n"
 
 
 def _render_context(context_summary) -> str:
@@ -213,9 +246,12 @@ class JaTranslator:
         Số dòng mỗi chunk trong pass literal (mặc định 8).
     """
 
-    def __init__(self, translator, chunk_size: int = 8):
+    def __init__(self, translator, chunk_size: int = 8, character_names=None):
         self.translator = translator
         self.chunk_size = chunk_size
+        # Inject character_names từ config (tên riêng bắt buộc dùng canonical)
+        # LLM hay tự sáng tạo tên nếu không có block này (vd: 匠 -> Craft)
+        self.character_names = character_names or []
 
     # --- Pass 1 ---
     def literal_translate(
@@ -225,6 +261,7 @@ class JaTranslator:
     ) -> Optional[List[str]]:
         """Pass 1: dịch literal, giữ keigo/particles/onomatopoeia."""
         glossary_block = _render_glossary(glossary_terms)
+        character_block = _render_character_block(self.character_names)
         translations: List[str] = []
 
         for chunk in _chunked(source_lines, self.chunk_size):
@@ -232,6 +269,7 @@ class JaTranslator:
             prompt = _LITERAL_TEMPLATE.format(
                 system=_SYSTEM_PROMPT,
                 glossary_block=glossary_block,
+                character_block=character_block,
                 lines=numbered,
             )
             try:
@@ -277,7 +315,7 @@ class JaTranslator:
         glossary_terms=None,
         context_summary: Optional[dict] = None,
     ) -> List[str]:
-        """Pass 2: trau chuốt. Trả về list (giữ rough nếu thất bại).
+        """Pass 2: trau chuốt. Trả về list (giữ rough nếu thất bại hoàn toàn).
 
         Parameters
         ----------
@@ -289,11 +327,13 @@ class JaTranslator:
             return rough_translations
 
         glossary_block = _render_glossary(glossary_terms)
+        character_block = _render_character_block(self.character_names)
         context_block = _render_context(context_summary)
         pairs_text = _format_pairs(source_lines, rough_translations)
         prompt = _POLISH_TEMPLATE.format(
             system=_SYSTEM_PROMPT,
             glossary_block=glossary_block,
+            character_block=character_block,
             context_block=context_block,
             pairs=pairs_text,
         )
@@ -309,6 +349,14 @@ class JaTranslator:
             logger.warning("JaTranslator.polish_translate: no JSON list, keeping rough")
             return rough_translations
 
+        # Fail-fast nếu JSON trả về số phần tử sai — tránh silent mapping sai
+        if len(parsed) != len(source_lines):
+            logger.warning(
+                f"JaTranslator.polish_translate: JSON length {len(parsed)} "
+                f"!= source {len(source_lines)}, keeping rough"
+            )
+            return rough_translations
+
         out: List[str] = []
         for j, original in enumerate(source_lines):
             match = None
@@ -316,7 +364,12 @@ class JaTranslator:
                 if not isinstance(item, dict):
                     continue
                 idx = item.get("id")
-                if idx == j + 1:
+                # id có thể là int hoặc string số; chuẩn hoá trước khi so
+                try:
+                    idx_int = int(idx) if idx is not None else None
+                except (ValueError, TypeError):
+                    idx_int = None
+                if idx_int == j + 1:
                     match = item.get("text") or item.get("translation")
                     break
             out.append(match.strip() if match else rough_translations[j])
@@ -343,11 +396,13 @@ class JaTranslator:
             return []
 
         glossary_block = _render_glossary(glossary_terms)
+        character_block = _render_character_block(self.character_names)
         context_block = _render_context(context_summary)
         pairs_text = _format_pairs(source_lines, translations)
         prompt = _QA_TEMPLATE.format(
             system=_SYSTEM_PROMPT,
             glossary_block=glossary_block,
+            character_block=character_block,
             context_block=context_block,
             pairs=pairs_text,
         )
@@ -362,12 +417,19 @@ class JaTranslator:
         if not isinstance(parsed, list):
             return []
 
+        # Chuẩn hoá: nếu JSON có len khác source, chỉ lấy phần overlap
         results: List[dict] = []
         for item in parsed:
             if not isinstance(item, dict) or "index" not in item:
                 continue
+            try:
+                idx_int = int(item.get("index", 0))
+            except (ValueError, TypeError):
+                continue
+            if idx_int < 1 or idx_int > len(source_lines):
+                continue
             results.append({
-                "index": int(item.get("index", 0)),
+                "index": idx_int,
                 "ok": bool(item.get("ok", False)),
                 "issue": str(item.get("issue", "")),
                 "suggestion": str(item.get("suggestion", "")),

@@ -266,6 +266,21 @@ class TranslationPipeline:
                 logger.warning(f"Failed to init JaTranslator2: {e}, skipping batch refine")
                 self.ja_translator2 = None
 
+        # Init JaTranslator (3-pass: literal → polish → qa) với character_names
+        # để LLM biết dùng canonical cho tên riêng (VD: 匠 -> Takumi, không phải "Craft")
+        if self._is_japanese_source:
+            try:
+                from .ja_translator import JaTranslator
+                self.ja_translator = JaTranslator(
+                    self.translator,
+                    chunk_size=8,
+                    character_names=config.get('character_names', []),
+                )
+                logger.info("JaTranslator (3-pass, with character_names) enabled")
+            except Exception as e:
+                logger.warning(f"Failed to init JaTranslator: {e}")
+                self.ja_translator = None
+
         # 2-tier Worker A: chạy độc lập với ja_trans2
         # Worker A phân tích context toàn phim trước khi pipeline main dịch
         if self.ja_2tier_enabled and self._is_japanese_source:
@@ -1218,6 +1233,12 @@ class TranslationPipeline:
                 glossary_lines.append(term_line)
             glossary_block = p['glossary_hdr'] + "\n" + "\n".join(glossary_lines) + "\n"
 
+        # Inject character_names (tên riêng) vào prompt để LLM biết canonical
+        # VD: 匠 = Takumi (KHÔNG phải "Craft"), あゆみ = Ayumi (KHÔNG phải "Aya")
+        # Đây là cách duy nhất để LLM dùng tên đúng, vì glossary section chỉ cover
+        # các từ vựng chung.
+        character_block = self._build_character_names_block()
+
         num_lines = len([l for l in task['original_text'].split('\n') if l.strip()])
 
         # 2-tier: Inject context block tu Worker A (neu co)
@@ -1225,7 +1246,7 @@ class TranslationPipeline:
 
         return f"""{p['system'].format(src=src_lang, tgt=tgt_lang)}
 
-{glossary_block}{context_block}{p['history_hdr']}
+{glossary_block}{character_block}{context_block}{p['history_hdr']}
 {context['history']}
 
 {p['current_hdr']}
@@ -1237,6 +1258,35 @@ class TranslationPipeline:
 {p['rules'].format(n=num_lines)}
 
 ### {p['output']}"""
+
+    def _build_character_names_block(self) -> str:
+        """Build block 'TEN RIENG' từ config.character_names để inject vào prompt.
+
+        Format mỗi entry:
+          - 匠 -> Takumi (tên riêng nam, KHÔNG dịch)
+        LLM đọc block này sẽ biết dùng canonical thay vì "sáng tạo" tên (Craft/Aya...).
+        """
+        char_names = self.config.get('character_names', [])
+        if not char_names:
+            return ""
+        lines = []
+        for entry in char_names:
+            canonical = entry.get('canonical', '').strip()
+            aliases = entry.get('aliases', []) or []
+            if not canonical or not aliases:
+                continue
+            # Dùng alias JA đầu tiên làm source_term (nếu có), nếu không thì canonical
+            ja_aliases = [a for a in aliases
+                          if re.match(r'[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff]', a)]
+            source = ja_aliases[0] if ja_aliases else canonical
+            context = entry.get('context', '').strip()
+            line = f"- {source} -> {canonical}"
+            if context:
+                line += f" ({context})"
+            lines.append(line)
+        if not lines:
+            return ""
+        return "TEN RIENG BAT BUOC (giu nguyen, KHONG tu y dich/sang tao):\n" + "\n".join(lines) + "\n"
 
     def _save_to_tm(self, project, source_lines, translations):
         src_lang = self.config['project']['source_lang']

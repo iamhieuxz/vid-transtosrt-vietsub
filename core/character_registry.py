@@ -143,7 +143,51 @@ class CharacterRegistry:
                 # Verify có thay đổi
                 if fixed != target_line:
                     return fixed
+
+            # Cover case Takao/Kawaguchi: target có canonical của 1 nhân vật KHÁC
+            # trong config (alias hoặc also_known_as) nhưng không có canonical này
+            aka_wrong = self._find_wrong_forms_with_aka(ja_name, canonical_vi, target_line)
+            if aka_wrong:
+                fixed = target_line
+                for wrong in aka_wrong:
+                    pattern = re.compile(r'\b' + re.escape(wrong) + r'\b', re.IGNORECASE)
+                    fixed = pattern.sub(canonical_vi, fixed)
+                if fixed != target_line:
+                    return fixed
         return None
+
+    def _find_wrong_forms_with_aka(self, ja_name: str, canonical: str, target: str) -> List[str]:
+        """Tìm các dạng sai bao gồm cả 'also_known_as' từ config.
+
+        Trường hợp: source JA = "川口くん" (→ Kawaguchi), target VI = "Takao"
+        → Takao là alias của 1 nhân vật khác trong config, nhưng cũng là also_known_as
+        của Kawaguchi → phải fix Takao → Kawaguchi.
+        """
+        canonical_map = self._load_canonical_map()
+        target_lower = target.lower()
+        wrong = []
+        canonical_lower = canonical.lower()
+        # Tìm key của canonical
+        key = canonical.lower()
+        # Lấy also_known_as (nếu có)
+        aka = []
+        if key in canonical_map:
+            aka = canonical_map[key].get("also_known_as", []) or []
+
+        # Tìm TẤT CẢ canonical names trong target
+        for ck, entry in canonical_map.items():
+            entry_canonical = entry["canonical"]
+            if entry_canonical.lower() == canonical_lower:
+                continue  # Bỏ chính nó
+            # Check từng alias (kể cả also_known_as) trong target
+            all_aliases = entry.get("aliases", []) or []
+            all_akas = entry.get("also_known_as", []) or []
+            for alias in all_aliases + all_akas:
+                if alias.lower() == canonical_lower:
+                    continue
+                if alias.lower() in target_lower and canonical_lower not in target_lower:
+                    wrong.append(alias)
+        return wrong
 
     def _find_canonical_key(self, name: str, canonical_map: Dict[str, dict]) -> Optional[str]:
         """Tìm canonical_key trong config map cho tên name (alias match).
@@ -179,10 +223,12 @@ class CharacterRegistry:
             if not canonical:
                 continue
             aliases = entry.get("aliases", []) or []
+            also_known_as = entry.get("also_known_as", []) or []
             # Key = canonical thường (lowercase) để match alias
             result[canonical.lower()] = {
                 "canonical": canonical,
                 "aliases": aliases,
+                "also_known_as": also_known_as,
             }
         return result
 

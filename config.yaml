@@ -1318,7 +1318,27 @@ character_names:
   - たくみ
   - Takumi
   canonical: Takumi
-  context: tên riêng nam - Whisper hay nghe nhầm thành "Craft" trong JAV context; PHẢI giữ "Takumi" toàn phim
+  context: tên riêng nam - Whisper hay nghe nhầm thành "Craft" trong JAV context;
+    PHẢI giữ "Takumi" toàn phim
+- aliases:
+  - 川口くん
+  - 川口さん
+  - 川口
+  - カワグチ
+  - Kawaguchi
+  canonical: Kawaguchi
+  context: nam chính, ngành cho vay; Whisper hay nhầm thành "Takao" trong cùng phim
+  # Tên khác trong cùng phim có thể refer đến Kawaguchi (alias ngang hàng)
+  also_known_as:
+  - Takao
+  - たけお
+- aliases:
+  - Aya
+  - Aya-san
+  - アヤ
+  canonical: Aya
+  context: Whisper thường nghe nhầm あゆみ thành Aya; dùng để registry bắt lỗi,
+    KHÔNG dùng làm canonical thật
 anti_artifacts:
 - pattern: \bvâng\b
   replacement: hai
