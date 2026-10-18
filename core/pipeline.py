@@ -393,6 +393,28 @@ class TranslationPipeline:
             except Exception as e:
                 logger.warning(f"PostProcessor failed: {e}, skipping")
 
+        # Character registry validation: tên riêng nhất quán toàn phim
+        # Build từ window_contexts (Worker A) + config.character_names.
+        # Auto-fix các dòng có JA name X nhưng VI dịch sai canonical.
+        registry_stats = None
+        if self._is_japanese_source and self.ja_context_analyzer is not None:
+            try:
+                from .character_registry import CharacterRegistry
+                registry = CharacterRegistry(self.db, project_id)
+                registry.build()
+                registry_stats = self._apply_character_registry(
+                    registry, project_id, project,
+                )
+                if registry_stats and registry_stats['fixed'] > 0:
+                    logger.info(
+                        f"CharacterRegistry: auto-fixed {registry_stats['fixed']} "
+                        f"name mismatches in {registry_stats['checked']} checked lines"
+                    )
+                    # Export lại sau khi fix tên
+                    self._export_to_folder(project_id, project)
+            except Exception as e:
+                logger.warning(f"CharacterRegistry failed: {e}, skipping")
+
         pending = self.db.count_pending_windows(project_id, max_retries=self.max_retries)
         dead = self.db.count_dead_letter(project_id)
 
@@ -405,6 +427,37 @@ class TranslationPipeline:
 
         self._print_summary(project_id, pending, dead, refined_stats=refined_stats)
         console.print(f"\n{STATUS_ICONS['complete']} [green]Pipeline finished successfully![/green]")
+
+    def _apply_character_registry(self, registry, project_id: int, project: dict) -> dict:
+        """Apply character registry auto-fix cho toàn bộ project.
+
+        Với mỗi subtitle item, so sánh source JA có mention tên X không,
+        và target VI có dùng canonical của X không. Nếu sai → auto-fix.
+        """
+        items = self.db.get_all_items(project_id)
+        total = len(items)
+        checked = 0
+        fixed = 0
+        for item in items:
+            source = item.get('original_text', '')
+            target = item.get('translated_text', '')
+            if not source or not target:
+                continue
+            checked += 1
+            new_target = registry.validate_translation(source, target)
+            if new_target and new_target != target:
+                with self.db._get_connection() as conn:
+                    conn.execute(
+                        "UPDATE subtitle_items SET translated_text=? WHERE id=?",
+                        (new_target, item['id'])
+                    )
+                    conn.commit()
+                fixed += 1
+                logger.debug(
+                    f"CharacterRegistry: sub {item['sub_index']} fixed: "
+                    f"'{target[:50]}...' -> '{new_target[:50]}...'"
+                )
+        return {'checked': checked, 'fixed': fixed, 'total': total}
 
     def _export_to_folder(self, project_id: int, project: dict):
         """
@@ -898,9 +951,17 @@ class TranslationPipeline:
         + 2-tier context (inject từ Worker A) + Worker C scene-review.
 
         Trả về (translations, source_lines) giống _translate_window thường.
+
+        Config flag (config.translation.literal_mode):
+          - False (mặc định): chạy 3-pass đầy đủ
+          - True: chỉ chạy literal pass (giữ sát nghĩa gốc, dùng cho JAV cần dịch
+            trung thực hoặc khi user muốn kiểm tra chất lượng dịch raw)
         """
         from .ja_translator import JaTranslator  # noqa: F401
         import json
+
+        # Literal mode flag: skip polish + qa, chỉ giữ literal
+        literal_mode = self.config.get('translation', {}).get('literal_mode', False)
 
         # Lấy context cho window hiện tại (2-tier)
         context_summary = self._get_ja_context_for_window(task, project_id)
@@ -919,6 +980,13 @@ class TranslationPipeline:
                 f"({len(rough)} vs {len(source_lines)}), failing"
             )
             return None
+
+        # Literal mode: return rough ngay, skip polish + qa
+        if literal_mode:
+            logger.info(
+                f"Window {task['window_index']}: JA literal-mode (1-pass, no polish)"
+            )
+            return rough, source_lines
 
         # Pass 2: polish (có inject context nếu có)
         polished = self.ja_translator.polish_translate(

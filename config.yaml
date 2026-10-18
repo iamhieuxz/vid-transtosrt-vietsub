@@ -19,6 +19,7 @@ window:
   future: 4
 translation:
   mode: uncen
+  literal_mode: false
 models:
   default:
     name: huihui_ai/hunyuan-mt-abliterated:7b-chimera
