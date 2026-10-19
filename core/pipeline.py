@@ -1141,11 +1141,12 @@ class TranslationPipeline:
         if rough is None:
             logger.warning(f"Window {task['window_index']}: JA literal pass failed")
             return None
-        if len(rough) != len(source_lines):
-            # Fail-fast thay vì pad bằng source gốc (gây phụ đề Nhật xen Việt).
+        if len(rough) != len(source_lines) or any(r is None for r in rough):
+            # shortcut: không pad bằng source Nhật, fail cả window để retry.
+            # <5s overhead, tránh bug "giữ nguyên bản gốc chưa dịch"
             logger.error(
-                f"Window {task['window_index']}: JA literal length mismatch "
-                f"({len(rough)} vs {len(source_lines)}), failing"
+                f"Window {task['window_index']}: JA literal bad output "
+                f"(len={len(rough)}/{len(source_lines)}, none={sum(1 for r in rough if r is None)}), failing"
             )
             return None
 

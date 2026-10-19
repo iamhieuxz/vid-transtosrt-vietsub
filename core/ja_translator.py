@@ -94,17 +94,18 @@ CHỈ DỊCH, KHÔNG trau chuốt.
 - Onomatopoeia: dịch sát nghĩa ra tiếng Việt (xem system).
 - Particles cuối câu: truyền tải cảm xúc, không bỏ.
 
-QUY TẮC ĐẦU RA:
-- Trả về đúng số dòng bằng số dòng đầu vào, KHÔNG thêm dòng thừa.
-- Mỗi dòng chỉ chứa bản dịch tương ứng, không đánh số, không ghi chú.
-- Giữ nguyên xuống dòng giữa các dòng đầu vào.
-- KHÔNG viết lại nguyên văn câu gốc, KHÔNG thêm giải thích.
+QUY TẮC ĐẦU RA (NGHIÊM):
+- Trả về CHÍNH XÁc số dòng bằng số dòng đầu vào (không thừa, không thiếu).
+- Mỗi dòng chỉ chứa bản dịch tương ứng, đánh số theo mẫu: "1. <dịch>"
+- KHÔNG viết lời dẫn, KHÔNG preamble "Dưới đây là...", KHÔNG chú thích ngoặc đơn.
+- KHÔNG bọc markdown (no **bold**, no →, no bullet).
 - Khi gặp tên riêng, PHẢI dùng canonical trong TEN RIENG (không tự sáng tạo).
+- Nếu câu đầu vào đã là tiếng Việt, in lại nguyên văn không đổi.
 
 TUYỆT ĐỐI KHÔNG:
 - Bỏ sót hoặc gộp nhiều dòng thành một.
-- Trả về câu gốc khi chưa dịch.
-- Dùng ký tự lạ (emoji, ký tự control) trong bản dịch.
+- Trả về câu gốc (tiếng Nhật) thay cho bản dịch.
+- Dùng ký tự lạ (emoji, ký tự control, romaji trong ngoặc) trong bản dịch.
 - Tự sáng tạo tên riêng (vd: 匠 KHÔNG phải "Craft", あゆみ KHÔNG phải "Aya").
 {glossary_block}
 {character_block}
@@ -267,9 +268,24 @@ def _format_pairs(source_lines: List[str], translations: List[str]) -> str:
 
 _LEADING_NUM_RE = re.compile(r"^\s*\d+[\.\)]\s*")
 
+# shortcut: strip markdown bold + leading arrows khi LLM 8B leak format
+_MARKDOWN_BOLD_RE = re.compile(r"\*{1,3}([^*]+)\*{1,3}")
+_LEADING_ARROW_RE = re.compile(r"^[→\-\*\u2022]\s*")
+
 
 def _strip_leading_number(line: str) -> str:
     return _LEADING_NUM_RE.sub("", line).strip()
+
+
+def _clean_markdown(line: str) -> str:
+    """Strip markdown bold, leading arrows, giữ text thuần. Áp dụng cho mọi
+    LLM output trước khi xuất ra SRT — tránh bug **xxx**, → xxx leak.
+    """
+    if not line:
+        return line
+    cleaned = _MARKDOWN_BOLD_RE.sub(r"\1", line)
+    cleaned = _LEADING_ARROW_RE.sub("", cleaned)
+    return cleaned.strip()
 
 
 def _chunked(seq: List[str], size: int):
@@ -329,13 +345,33 @@ class JaTranslator:
                 return None
 
             out_lines = [l.strip() for l in raw.strip().split("\n") if l.strip()]
+            # shortcut: lọc chỉ giữ các dòng BẮT ĐẦU BẰNG SỐ thứ tự hợp lệ (1., 2., ...).
+            # LLM 8B hay chèn preamble "Dưới đây là..." hoặc trộn Nhật ngoài numbered,
+            # cách này robust hơn drop-preamble đơn lẻ; tránh bug **彼とのセックスが** leak.
+            numbered_re = re.compile(r"^\s*(\d+)\s*[\.\)、]\s*(.*)$")
+            parsed_lines = []
+            for line in out_lines:
+                m = numbered_re.match(line)
+                if m:
+                    idx_str = m.group(1)
+                    text = m.group(2).strip()
+                    parsed_lines.append(text)
+            if not parsed_lines:
+                # LLM không numbered → fallback drop-preamble cũ (cho prompt cũ)
+                while out_lines and not out_lines[0].lstrip().startswith(("1.", "1)", "1、", "1 ")):
+                    out_lines.pop(0)
+                    if not out_lines:
+                        break
+                parsed_lines = out_lines
             for j, original in enumerate(chunk):
-                if j < len(out_lines):
-                    translations.append(_strip_leading_number(out_lines[j]))
+                if j < len(parsed_lines):
+                    translations.append(_clean_markdown(parsed_lines[j]))
                 else:
                     # retry từng dòng bằng prompt literal ngắn
                     single = self._translate_single_literal(original, glossary_terms)
-                    translations.append(single if single else original)
+                    # shortcut: nếu retry fail thì return None để pipeline biết retry,
+                    # KHÔNG fallback về raw Nhật (gây bug "giữ nguyên bản gốc chưa dịch")
+                    translations.append(single)
         return translations if translations else None
 
     def _translate_single_literal(self, text: str, glossary_terms=None) -> Optional[str]:
@@ -345,14 +381,20 @@ class JaTranslator:
             f"{self.system_prompt}\n\n"
             f"Dịch câu tiếng Nhật sau sang tiếng Việt.\n"
             f"Giữ keigo/particles/onomatopoeia đúng, KHÔNG trau chuốt.\n"
-            f"Trả về CHỈ bản dịch, một dòng duy nhất.\n"
+            f"Trả về CHỈ bản dịch, một dòng duy nhất, không ghi chú.\n"
             f"{glossary_block}"
             f"Câu gốc: {text}"
         )
         try:
             raw = self.translator.generate(prompt, temperature=0.1)
             line = raw.strip().split("\n")[0].strip()
-            return _strip_leading_number(line) or None
+            cleaned = _clean_markdown(_strip_leading_number(line))
+            # shortcut: nếu trả về chính câu gốc / rỗng thì coi như fail,
+            # <3s overhead, ép pipeline retry thay vì để raw Nhật vào output
+            if not cleaned or cleaned == text.strip():
+                logger.warning(f"JaTranslator._translate_single_literal: empty/echo for {text[:40]!r}")
+                return None
+            return cleaned
         except Exception as e:
             logger.warning(f"JaTranslator._translate_single_literal failed: {e}")
             return None
@@ -430,7 +472,7 @@ class JaTranslator:
                 if idx_int == j + 1:
                     match = item.get("text") or item.get("translation")
                     break
-            out.append(match.strip() if match else rough_translations[j])
+            out.append(_clean_markdown(match).strip() if match else rough_translations[j])
         return out
 
     # --- Pass 3 ---
@@ -516,7 +558,7 @@ class JaTranslator:
             if raw_id is None:
                 raw_id = item.get("index", 0)
             idx = raw_id - 1
-            sug = item.get("suggestion", "").strip()
+            sug = _clean_markdown(item.get("suggestion", "").strip())
             if 0 <= idx < len(out) and sug:
                 out[idx] = sug
         return out
