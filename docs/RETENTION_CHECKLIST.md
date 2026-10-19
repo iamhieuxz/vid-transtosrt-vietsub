@@ -123,10 +123,10 @@
 ## 🟡 P2 — Cải tiến dài hạn (làm cuối)
 
 ### Fix 13 — Settings: thêm `model URL`, `max_retries`, `checkpoint_interval`
-- [ ] Mở `gui.py`
-- [ ] Thêm các field tương ứng vào `SettingsPage`
-- [ ] Wire save/load
-- [ ] **Test:** Tương tự Fix 9
+- [x] Thêm `ollama_url_edit`, `max_retries_edit`, `checkpoint_edit`
+- [x] Pipeline (Advanced) card
+- [x] Wire save/load
+- [x] **Test:** ast.parse OK
 - [ ] Tick `[x]` khi pass
 
 ### Fix 14 — GUI drag-drop file

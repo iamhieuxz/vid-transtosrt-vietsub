@@ -857,8 +857,27 @@ class SettingsPage(QWidget):
         self.timeout_edit.setPlaceholderText("180 (giây)")
         llm_card.addWidget(FieldRow("timeout", self.timeout_edit))
 
+        self.ollama_url_edit = QLineEdit()
+        self.ollama_url_edit.setPlaceholderText("http://localhost:11434/api/generate")
+        llm_card.addWidget(FieldRow("Ollama URL", self.ollama_url_edit))
+
+        # Pipeline card 2 - advanced
+        pipe2_card = Card()
+        pipe2_title = QLabel(f"{ICON['zap']}  Pipeline (Advanced)")
+        pipe2_title.setObjectName("sectionTitle")
+        pipe2_card.addWidget(pipe2_title)
+
+        self.max_retries_edit = QLineEdit()
+        self.max_retries_edit.setPlaceholderText("5")
+        pipe2_card.addWidget(FieldRow("Max retries", self.max_retries_edit))
+
+        self.checkpoint_edit = QLineEdit()
+        self.checkpoint_edit.setPlaceholderText("20")
+        pipe2_card.addWidget(FieldRow("Checkpoint interval", self.checkpoint_edit))
+
         v.addWidget(pipe_card)
         v.addWidget(llm_card)
+        v.addWidget(pipe2_card)
         v.addStretch()
 
 
@@ -1292,6 +1311,10 @@ class App(QMainWindow):
         self.page_settings.num_predict_edit.setText(str(llm_cfg.get("num_predict", 2048)))
         self.page_settings.temperature_edit.setText(str(llm_cfg.get("temperature", 0.05)))
         self.page_settings.timeout_edit.setText(str(llm_cfg.get("timeout", 180)))
+        self.page_settings.ollama_url_edit.setText(llm_cfg.get("ollama_url", "http://localhost:11434/api/generate"))
+
+        self.page_settings.max_retries_edit.setText(str(pipe.get("max_retries", 5)))
+        self.page_settings.checkpoint_edit.setText(str(pipe.get("checkpoint_interval", 20)))
 
         self.page_glossary.load(self.config.get("glossary", []) or [])
 
@@ -1349,6 +1372,16 @@ class App(QMainWindow):
             llm_cfg["timeout"] = int(self.page_settings.timeout_edit.text() or 180)
         except ValueError:
             llm_cfg["timeout"] = 180
+        llm_cfg["ollama_url"] = self.page_settings.ollama_url_edit.text().strip() or "http://localhost:11434/api/generate"
+
+        try:
+            pipe["max_retries"] = int(self.page_settings.max_retries_edit.text() or 5)
+        except ValueError:
+            pipe["max_retries"] = 5
+        try:
+            pipe["checkpoint_interval"] = int(self.page_settings.checkpoint_edit.text() or 20)
+        except ValueError:
+            pipe["checkpoint_interval"] = 20
 
         save_config(self.config, self.config_path)
         self.set_status("Đã lưu cấu hình", "success")
