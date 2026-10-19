@@ -87,29 +87,19 @@ _SYSTEM_PROMPT = _BASE_SYSTEM_PROMPT
 _LITERAL_TEMPLATE = """\
 {system}
 
-Bản dịch "nguyên văn" từng câu, ưu tiên giữ đúng cấu trúc & cảm xúc gốc.
+Bản dịch nguyên văn từng câu. CHỈ DỊCH SANG TIẾNG VIỆT, KHÔNG trau chuốt.
 
-CHỈ DỊCH, KHÔNG trau chuốt.
-- Xưng hô: ghi chú rõ dạng keigo gặp phải (trong đầu) để bước sau chọn từ xưng hô VN nhất quán.
-- Onomatopoeia: dịch sát nghĩa ra tiếng Việt (xem system).
-- Particles cuối câu: truyền tải cảm xúc, không bỏ.
+OUTPUT FORMAT (BẮT BUỘC):
+1. 越南語訳
+2. 越南語訳
+3. 越南語訳
 
-QUY TẮC ĐẦU RA (NGHIÊM):
-- Trả về CHÍNH XÁc số dòng bằng số dòng đầu vào (không thừa, không thiếu).
-- Mỗi dòng chỉ chứa bản dịch tương ứng, đánh số theo mẫu: "1. <dịch>"
-- KHÔNG viết lời dẫn, KHÔNG preamble "Dưới đây là...", KHÔNG chú thích ngoặc đơn.
-- KHÔNG bọc markdown (no **bold**, no →, no bullet).
-- Khi gặp tên riêng, PHẢI dùng canonical trong TEN RIENG (không tự sáng tạo).
-- Nếu câu đầu vào đã là tiếng Việt, in lại nguyên văn không đổi.
+Return numbered list, đúng {n} dòng. Không thêm text ngoài danh sách.
+Không giữ nguyên câu tiếng Nhật. Không thêm comment.
 
-TUYỆT ĐỐI KHÔNG:
-- Bỏ sót hoặc gộp nhiều dòng thành một.
-- Trả về câu gốc (tiếng Nhật) thay cho bản dịch.
-- Dùng ký tự lạ (emoji, ký tự control, romaji trong ngoặc) trong bản dịch.
-- Tự sáng tạo tên riêng (vd: 匠 KHÔNG phải "Craft", あゆみ KHÔNG phải "Aya").
 {glossary_block}
 {character_block}
-Các dòng cần dịch (đã đánh số):
+Lines:
 {lines}
 """
 
@@ -248,6 +238,35 @@ def _number_lines(lines: List[str]) -> str:
     return "\n".join(f"{i+1}. {l}" for i, l in enumerate(lines))
 
 
+# Compact system prompt cho LITERAL pass (chỉ giữ keigo + uncen essentials).
+# Full _BASE_SYSTEM_PROMPT + _UNCEN_ADDON quá dài (~2677 chars) → LLM 8B hay
+# non-deterministic, đôi khi echo raw Japanese thay vì dịch. Literal pass chỉ cần
+# giữ ý chính (keigo + uncen), chi tiết cho POLISH pass xử lý.
+_LITERAL_SYSTEM_COMPACT = """\
+You are a professional Japanese-to-Vietnamese subtitle translator.
+
+ABSOLUTE RULES (never break):
+- Output ONLY Vietnamese text, never Japanese.
+- Never return the original Japanese text.
+- Never output Japanese characters (あ-ん ア-ン 一-龯).
+
+Output format: numbered list, one translation per line:
+1. Vietnamese translation
+2. Vietnamese translation
+
+Examples:
+Input: こんにちは
+Output: 1. Xin chào
+
+Input: ありがとうございます
+Output: 1. Cảm ơn anh/chị
+
+Keigo: です/ます → "anh/chị"; だ/する → "tớ/cậu".
+Particles: ね=nhỉ, よ=nhấn mạnh, わ=sự ngạc nhiên, ぞ=cảnh báo.
+Onomatopoeia: きらきら→lấp lánh, わくわく→hào hứng, ドキドキ→đập thình thịch.
+Common mistakes to avoid: 勉強=học (not "cố gắng"), 汽車=xe lửa, 階段=cầu thang."""
+
+
 def _get_system_prompt(mode: str = "default") -> str:
     """Trả về system prompt theo mode.
 
@@ -259,6 +278,12 @@ def _get_system_prompt(mode: str = "default") -> str:
     return _BASE_SYSTEM_PROMPT
 
 
+def _get_literal_system_prompt(mode: str = "default") -> str:
+    """Compact system prompt cho LITERAL pass — giảm prompt length ~85% để LLM 8B
+    ổn định hơn. Giữ đủ keigo + uncen essentials, chi tiết cho polish pass."""
+    return _LITERAL_SYSTEM_COMPACT
+
+
 def _format_pairs(source_lines: List[str], translations: List[str]) -> str:
     return "\n".join(
         f"ORIGINAL: {s}\nTRANSLATION: {t}"
@@ -267,6 +292,31 @@ def _format_pairs(source_lines: List[str], translations: List[str]) -> str:
 
 
 _LEADING_NUM_RE = re.compile(r"^\s*\d+[\.\)]\s*")
+
+
+def _is_likely_japanese_translation(text: str) -> bool:
+    """True nếu text gần như chắc chắn là bản dịch thất bại (Japanese echo hoặc
+    chỉ chứa rất ít tiếng Việt). Dùng để detect literal pass fail thay vì
+    dùng heuristic JA-char ratio đơn giản (vì kết quả có thể chứa romaji).
+    """
+    if not text:
+        return True
+    # Đếm từ tiếng Việt có dấu hoặc common VN patterns
+    vi_chars = sum(1 for c in text if '\u00c0' <= c <= '\u1ef3')
+    # Từ tiếng Việt common trong sub
+    vi_words = len(re.findall(r'\b(tôi|anh|chị|em|bạn|mình|họ|tao|mày|cậu|thì|là|có|không|và|đã|được|rồi|này|kia|với|cho)\b', text))
+    # Nếu có dấu tiếng Việt nhiều → không phải JA echo
+    if vi_chars >= 3:
+        return False
+    # Nếu có ≥2 từ VN common → không phải JA echo
+    if vi_words >= 2:
+        return False
+    # Nếu ≥60% chars là Japanese → echo
+    total_chars = sum(1 for c in text if c.isalpha() or '\u3040' <= c <= '\u309f' or '\u30a0' <= c <= '\u30ff')
+    if total_chars == 0:
+        return True
+    ja_chars = sum(1 for c in text if '\u3040' <= c <= '\u309f' or '\u30a0' <= c <= '\u30ff')
+    return ja_chars / total_chars >= 0.6
 
 # shortcut: strip markdown bold + leading arrows khi LLM 8B leak format
 _MARKDOWN_BOLD_RE = re.compile(r"\*{1,3}([^*]+)\*{1,3}")
@@ -318,6 +368,10 @@ class JaTranslator:
         # Mode: "default" / "cen" / "uncen" — quyết định system prompt
         self.mode = mode or "default"
         self.system_prompt = _get_system_prompt(self.mode)
+        # Compact system prompt cho LITERAL pass (~700 chars vs 2677).
+        # LLM 8B với prompt ngắn ổn định hơn nhiều so với full system prompt
+        # (đã test — full prompt hay echo raw JA non-deterministic).
+        self.literal_system_prompt = _get_literal_system_prompt(self.mode)
 
     # --- Pass 1 ---
     def literal_translate(
@@ -333,7 +387,8 @@ class JaTranslator:
         for chunk in _chunked(source_lines, self.chunk_size):
             numbered = _number_lines(chunk)
             prompt = _LITERAL_TEMPLATE.format(
-                system=self.system_prompt,
+                system=self.literal_system_prompt,
+                n=len(chunk),
                 glossary_block=glossary_block,
                 character_block=character_block,
                 lines=numbered,
@@ -344,7 +399,44 @@ class JaTranslator:
                 logger.warning(f"JaTranslator.literal_translate: generate failed: {e}")
                 return None
 
+            # P1-fix: nếu LLM trả JSON array thay vì plain numbered lines,
+            # hãy parse JSON. Trước đây split('\n') trên '[{...},{...}]' trả về
+            # 1 dòng JSON dài → regex numbered không match → fallback append
+            # raw JSON string vào translations → commit "raw JSON" ra SRT.
+            if raw and raw.lstrip().startswith(("[", "{")):
+                parsed_json = self.translator.extract_json(raw)
+                if isinstance(parsed_json, list) and parsed_json:
+                    # Map ID → text như output mong đợi (numbered plain text).
+                    # Nếu items không có "id", dùng thứ tự.
+                    items = parsed_json
+                    out_lines = []
+                    for idx, item in enumerate(items):
+                        if isinstance(item, dict):
+                            text = item.get("text") or item.get("translation") or item.get("vietnamese") or ""
+                            out_lines.append(f"{idx + 1}. {text}")
+                        else:
+                            out_lines.append(f"{idx + 1}. {str(item)}")
+                    raw = "\n".join(out_lines)
+                else:
+                    logger.warning("literal_translate: JSON parse failed, falling back to plain text")
+
+            # Detect raw JA echo (LLM non-deterministic với prompt phức tạp).
+            # Retry với temperature 0 (deterministic) nếu ≥50% lines có JA chars.
             out_lines = [l.strip() for l in raw.strip().split("\n") if l.strip()]
+            ja_count = sum(
+                1 for l in out_lines
+                if any('\u3040' <= c <= '\u309f' or '\u30a0' <= c <= '\u30ff' for c in l)
+            )
+            if ja_count >= max(1, len(out_lines) * 0.5):
+                logger.warning(
+                    f"JaTranslator.literal_translate: {ja_count}/{len(out_lines)} raw-JA lines, "
+                    f"retrying with temperature=0 (deterministic)"
+                )
+                try:
+                    raw = self.translator.generate(prompt, temperature=0.0)
+                    out_lines = [l.strip() for l in raw.strip().split("\n") if l.strip()]
+                except Exception as e:
+                    logger.debug(f"Deterministic retry failed: {e}")
             # shortcut: lọc chỉ giữ các dòng BẮT ĐẦU BẰNG SỐ thứ tự hợp lệ (1., 2., ...).
             # LLM 8B hay chèn preamble "Dưới đây là..." hoặc trộn Nhật ngoài numbered,
             # cách này robust hơn drop-preamble đơn lẻ; tránh bug **彼とのセックスが** leak.
@@ -372,15 +464,49 @@ class JaTranslator:
                     # shortcut: nếu retry fail thì return None để pipeline biết retry,
                     # KHÔNG fallback về raw Nhật (gây bug "giữ nguyên bản gốc chưa dịch")
                     translations.append(single)
+
+        # Final validation: nếu hơn 50% kết quả là echo tiếng Nhật → retry toàn bộ chunk
+        # shortcut: chỉ retry khi chunk đủ lớn (≥4 dòng), tránh retry vô tận với single line
+        if len(chunk) >= 4:
+            ja_echo_count = sum(
+                1 for t in translations
+                if t and any('\u3040' <= c <= '\u309f' or '\u30a0' <= c <= '\u30ff' for c in t)
+                and _is_likely_japanese_translation(t)
+            )
+            if ja_echo_count >= len(chunk) * 0.5:
+                logger.warning(
+                    f"JaTranslator.likely JA-echo in literal chunk ({ja_echo_count}/{len(chunk)} lines), "
+                    f"retrying entire chunk with temperature=0"
+                )
+                retry_prompt = _LITERAL_TEMPLATE.format(
+                    system=self.literal_system_prompt,
+                    n=len(chunk),
+                    glossary_block=glossary_block,
+                    character_block=character_block,
+                    lines=_number_lines(chunk),
+                )
+                try:
+                    raw_retry = self.translator.generate(retry_prompt, temperature=0.0)
+                    retry_out = [l.strip() for l in raw_retry.strip().split("\n") if l.strip()]
+                    retry_parsed = []
+                    for line in retry_out:
+                        m = numbered_re.match(line)
+                        if m:
+                            retry_parsed.append(m.group(2).strip())
+                    if len(retry_parsed) >= len(chunk):
+                        for j in range(len(chunk)):
+                            translations[j] = _clean_markdown(retry_parsed[j])
+                except Exception as e:
+                    logger.debug(f"Literal chunk retry failed: {e}")
+
         return translations if translations else None
 
     def _translate_single_literal(self, text: str, glossary_terms=None) -> Optional[str]:
         """Retry 1 dòng literal khi chunk bị thiếu."""
         glossary_block = _render_glossary(glossary_terms)
         prompt = (
-            f"{self.system_prompt}\n\n"
+            f"{self.literal_system_prompt}\n\n"
             f"Dịch câu tiếng Nhật sau sang tiếng Việt.\n"
-            f"Giữ keigo/particles/onomatopoeia đúng, KHÔNG trau chuốt.\n"
             f"Trả về CHỈ bản dịch, một dòng duy nhất, không ghi chú.\n"
             f"{glossary_block}"
             f"Câu gốc: {text}"
@@ -457,23 +583,31 @@ class JaTranslator:
             )
             return rough_translations
 
-        out: List[str] = []
+        # Map JSON items back to source lines by id
+        parsed_by_id: dict = {}
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            idx = item.get("id")
+            try:
+                idx_int = int(idx) if idx is not None else None
+            except (ValueError, TypeError):
+                idx_int = None
+            if idx_int is not None:
+                text = item.get("text") or item.get("translation") or ""
+                parsed_by_id[idx_int] = _clean_markdown(text).strip()
+
+        # Final check: nếu kết quả polish vẫn là Japanese → fallback về literal translation
+        out_vn: List[str] = []
         for j, original in enumerate(source_lines):
-            match = None
-            for item in parsed:
-                if not isinstance(item, dict):
-                    continue
-                idx = item.get("id")
-                # id có thể là int hoặc string số; chuẩn hoá trước khi so
-                try:
-                    idx_int = int(idx) if idx is not None else None
-                except (ValueError, TypeError):
-                    idx_int = None
-                if idx_int == j + 1:
-                    match = item.get("text") or item.get("translation")
-                    break
-            out.append(_clean_markdown(match).strip() if match else rough_translations[j])
-        return out
+            result = parsed_by_id.get(j + 1, rough_translations[j] if j < len(rough_translations) else "")
+            # Nếu result gần như chắc là Japanese echo → retry bằng literal
+            if _is_likely_japanese_translation(result):
+                logger.debug(f"JaTranslator.polish_translate: line {j} is JA-echo, retry literal")
+                single = self._translate_single_literal(original, glossary_terms)
+                result = single if single else result
+            out_vn.append(result)
+        return out_vn
 
     # --- Pass 3 ---
     def qa_review(
@@ -565,26 +699,9 @@ class JaTranslator:
 
     # --- helpers ---
     def _safe_extract_json(self, text: str):
-        """Dùng json_repair (giống TranslatorService.extract_json) nhưng trả về
-        None khi thất bại thay vì raise.
-        """
+        """Use shared JSON extraction (P1-fix: unify 3 copies with subtle drift)."""
+        from .json_utils import extract_json_array
         try:
-            from json_repair import repair_json
-            import json
-            return json.loads(repair_json(text))
+            return extract_json_array(text)
         except Exception:
-            pass
-        # fallback: tìm JSON array lớn nhất
-        try:
-            import json
-            matches = re.findall(r"\[.*\]", text, re.DOTALL)
-            for match in reversed(matches):
-                try:
-                    parsed = json.loads(match)
-                    if isinstance(parsed, list):
-                        return parsed
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        return None
+            return None

@@ -9,5 +9,15 @@ json-repair>=0.30.0
 rich>=13.0.0
 tqdm>=4.66.0
 
+# Desktop GUI (Qt for Python)
+PySide6>=6.6.0
+
 # Windows shortcut support (for video .lnk files)
 pywin32>=306; sys_platform == "win32"
+
+# NVIDIA runtime cho ctranslate2 (GPU Whisper inference).
+# Bắt buộc với ctranslate2 >= 4.x — nếu thiếu sẽ lỗi 'cublas64_12.dll not found'.
+# Có thể cài cả 2 để support nhiều CUDA version.
+nvidia-cublas-cu12>=12.0.0; sys_platform == "win32"
+nvidia-cudnn-cu12>=9.0.0; sys_platform == "win32"
+nvidia-cuda-runtime-cu12>=12.0.0; sys_platform == "win32"

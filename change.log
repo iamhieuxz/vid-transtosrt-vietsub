@@ -2,7 +2,76 @@
 
 Tất cả thay đổi đáng chú ý của dự án sẽ được ghi vào file này.
 
-## [Unreleased] - 2026-06-17
+## [Unreleased] - 2026-10-18
+
+### GUI: Rewrite v2 — PySide6 (Qt) + flat dark theme
+
+#### Thay đổi lớn
+- **Bỏ Tkinter** → chuyển sang **PySide6** (Qt for Python) — native, professional
+- **Flat solid colors** — bỏ hoàn toàn gradient (theo yêu cầu user)
+- **Icon-rich** — mỗi nút/section có emoji icon (🏠 ⚙ 📚 📋 ▶ 💾 🔧 📁 v.v.), `IconButton` cho row actions (🗑)
+- **QSS styling** — dùng Qt Style Sheets thay vì custom Canvas
+- **Better widgets** — `QPushButton` với `variant` property (primary/secondary/ghost/danger), `QButtonGroup` cho nav, `QStackedWidget` cho pages
+- **Scrollable glossary** — `QScrollArea` + dynamic rows (add/remove/save)
+- **Thread-safe logging** — `QObject` Signal bridge từ subprocess → main thread
+
+#### Files
+- `gui.py` (43 KB) — rewrite hoàn toàn bằng PySide6
+- `requirements.txt` — thêm `PySide6>=6.6.0`
+
+#### Run
+```
+pip install -r requirements.txt
+python gui.py
+```
+
+#### Vấn đề
+- Terminal menu dùng Rich console, chạy trong PowerShell, phải gõ số 1-8 để chọn
+- Không có file browser (phải gõ đường dẫn thủ công)
+- Không xem được log realtime, không progress bar trực quan
+
+#### Giải pháp
+- Tạo `gui.py` — Tkinter desktop app dark theme, self-contained (chỉ dùng stdlib + yaml)
+- 4 sections: Workspace · Settings · Glossary · Log
+- File browser buttons cho input/output (📁)
+- Combobox cho ngôn ngữ & chế độ dịch
+- Glossary editor dạng bảng (add/remove/save)
+- Log panel real-time, auto-scroll, có màu theo level
+- Subprocess chạy `main.py` trong thread, capture stdout → log panel
+- Lưu/cập nhật `config.yaml` qua GUI
+
+#### Design DNA
+- Lưu tại `docs/design-dna.json` (3-phase workflow từ skill `design-dna`)
+- Dark theme: bg #0B0F19, primary #3B82F6, accent #22D3EE
+- Performance tier: lightweight (CSS only, không Canvas/WebGL)
+- Inter font + JetBrains Mono cho log
+
+#### Files
+- `gui.py` (mới) — desktop GUI app
+- `docs/design-dna.json` (mới) — design system specification
+- `main.py` — không sửa (GUI gọi subprocess)
+
+#### Run
+```
+python gui.py
+```
+
+## [Unreleased] - 2026-10-12
+
+### Resilience: Auto-recover từ Ollama outage
+
+#### Vấn đề
+- Khi Ollama chưa start khi pipeline bắt đầu → circuit breaker mở → tất cả windows fail
+- Sau khi restart Ollama, circuit breaker vẫn mở → retry không work
+- 8 items đầu của project JUFD-476 bị pending vĩnh viễn
+
+#### Giải pháp
+- `TranslatorService.check_ollama_health()`: ping `/api/tags` để check Ollama còn sống
+- `TranslatorService.try_recover_circuit_breaker()`: auto-reset circuit breaker nếu Ollama recover
+- Pipeline gọi `try_recover_circuit_breaker()` 2 chỗ:
+  1. Khi start pipeline (sau khi recover_stuck_tasks)
+  2. Trước mỗi `_process_single_task` (cover case Ollama recover giữa chừng)
+- Pre-flight check trong `main.py` đã có sẵn (cảnh báo rõ nếu Ollama down)
 
 ### Code Review & Bug Fixes
 

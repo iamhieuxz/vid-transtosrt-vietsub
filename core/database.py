@@ -161,7 +161,7 @@ class Database:
                 # INSERT OR REPLACE: SQLite resolves conflict via unique index on (project_id, sub_index)
                 c.execute("""INSERT OR REPLACE INTO subtitle_items (project_id, sub_index, start_time, end_time, original_text, status, translated_text)
                               VALUES (?,?,?,?,?,'pending', NULL)""",
-                          (project_id, it['index'], it['start'], it['end'], it['text']))
+                          (project_id, str(it['index']).lstrip('\ufeff\u200b'), it['start'], it['end'], it['text']))
             conn.commit()
 
     def update_item_translation(self, item_id: int, translated_text: str):
@@ -306,7 +306,9 @@ class Database:
             conn.commit()
 
     # --- Translation Memory (ngưỡng thấp để bắt câu ngắn) ---
-    def get_translation_memory(self, source_lang, target_lang, source_text, domain=None, min_char_count=4):
+    def get_translation_memory(self, source_lang, target_lang, source_text, domain=None, min_char_count=1):
+        # P1-fix: was min_char_count=4, missing short JA particles/cues (へ, ね, な, か).
+        # These 1-3 char tokens are important for tone/emotion in JAV translation.
         if len(source_text) < min_char_count:
             return None
         with self._get_connection() as conn:
@@ -333,7 +335,8 @@ class Database:
                 return row['target_text']
             return None
 
-    def save_translation_memory(self, source_lang, target_lang, source_text, target_text, domain='global', confidence=1.0, min_char_count=4):
+    def save_translation_memory(self, source_lang, target_lang, source_text, target_text, domain='global', confidence=1.0, min_char_count=1):
+        # P1-fix: was min_char_count=4, see get_translation_memory for rationale.
         if len(source_text) < min_char_count:
             return
         with self._get_connection() as conn:

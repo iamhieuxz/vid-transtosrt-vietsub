@@ -808,6 +808,11 @@ def _(self):
                 return {"total": 0, "completed": 0, "failed": 0, "skipped": 0}
         pl.ja_context_analyzer = MockContextAnalyzer()
 
+        # P0-fix: uncen literal mode skips polish by default, so test must
+        # explicitly opt out of literal_mode to verify 3-pass polish output.
+        pl.config.setdefault('translation', {})['literal_mode'] = False
+        pl.config['translation']['mode'] = 'default'  # avoid uncen auto literal mode
+
         pl.run(pid)
 
         items = db.get_all_items(pid)

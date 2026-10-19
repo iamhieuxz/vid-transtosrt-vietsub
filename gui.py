@@ -189,17 +189,26 @@ QFrame#separator {{
 /* ---------- Section heading ---------- */
 QLabel#sectionTitle {{
     color: {THEME['text']};
-    font-size: 16px;
+    font-size: 15px;
     font-weight: 700;
+    padding: 6px 0 4px 0;
     background: transparent;
+    min-height: 22px;
 }}
 
 QLabel#fieldLabel {{
-    color: {THEME['text_muted']};
-    font-size: 11px;
+    color: {THEME['text_body']};
+    font-size: 12px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
+    background: transparent;
+    padding: 2px 0;
+}}
+
+QLabel#muted {{
+    color: {THEME['text_muted']};
+    font-size: 12px;
     background: transparent;
 }}
 
@@ -240,44 +249,49 @@ QComboBox {{
     color: {THEME['text']};
     border: 1px solid {THEME['border']};
     border-radius: 6px;
-    padding: 0 10px;
-    min-height: 32px;
-    max-height: 32px;
+    padding: 6px 12px;
+    min-height: 28px;
 }}
 QComboBox:hover {{
     border: 1px solid {THEME['text_muted']};
 }}
 QComboBox:focus {{
-    border: 1px solid {THEME['text_muted']};
+    border: 1px solid {THEME['primary']};
+}}
+QComboBox:disabled {{
+    color: {THEME['text_muted']};
+    background-color: {THEME['bg']};
 }}
 QComboBox::drop-down {{
     border: none;
-    width: 24px;
+    width: 28px;
     subcontrol-origin: padding;
-    subcontrol-position: right center;
+    subcontrol-position: top right;
 }}
 QComboBox::down-arrow {{
     image: none;
-    width: 0; height: 0;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 6px solid {THEME['text_muted']};
+    width: 12px;
+    height: 12px;
     margin-right: 8px;
+    /* Unicode down-arrow rendered as text — Qt replaces image: none with native glyph */
+}}
+QComboBox::drop-down:open {{
+    border-left: 1px solid {THEME['border']};
 }}
 QComboBox QAbstractItemView {{
     background-color: {THEME['card']};
     color: {THEME['text']};
     border: 1px solid {THEME['border']};
-    selection-background-color: {THEME['border']};
-    selection-color: {THEME['text']};
+    selection-background-color: {THEME['primary']};
+    selection-color: white;
     outline: none;
     padding: 4px;
 }}
 QComboBox QAbstractItemView::item {{
     background-color: {THEME['card']};
     color: {THEME['text']};
-    padding: 6px 10px;
-    min-height: 20px;
+    padding: 8px 12px;
+    min-height: 26px;
     border: none;
 }}
 QComboBox QAbstractItemView::item:hover {{
@@ -285,8 +299,8 @@ QComboBox QAbstractItemView::item:hover {{
     color: {THEME['text']};
 }}
 QComboBox QAbstractItemView::item:selected {{
-    background-color: {THEME['border']};
-    color: {THEME['text']};
+    background-color: {THEME['primary']};
+    color: white;
 }}
 
 /* ---------- Checkbox ---------- */
@@ -510,6 +524,7 @@ ICON = {
     "warn":      "⚠",
     "err":       "✗",
     "info":      "ℹ",
+    "clock":     "🕐",
 }
 
 
@@ -573,6 +588,7 @@ class Card(QFrame):
         super().__init__(parent)
         self.setObjectName("card")
         self.setFrameShape(QFrame.NoFrame)
+        self.setAttribute(Qt.WA_StyledBackground, True)
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(20, 20, 20, 20)
         self._layout.setSpacing(12)
@@ -732,6 +748,7 @@ class WorkspacePage(QWidget):
     def _make_section_title(self, text: str) -> QLabel:
         lbl = QLabel(text)
         lbl.setObjectName("sectionTitle")
+        lbl.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
         return lbl
 
     def _build_files_col(self) -> QVBoxLayout:
@@ -748,7 +765,9 @@ class WorkspacePage(QWidget):
         recent_label.setObjectName("muted")
         recent_row.addWidget(recent_label)
         self.recent_combo = QComboBox()
-        self.recent_combo.setMinimumWidth(300)
+        self.recent_combo.setObjectName("recent_combo")
+        self.recent_combo.setMinimumWidth(240)
+        self.recent_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         self.recent_combo.setPlaceholderText("(trống)")
         recent_row.addWidget(self.recent_combo, 1)
         files_card.addLayout(recent_row)
@@ -766,14 +785,20 @@ class WorkspacePage(QWidget):
         settings_card = Card()
         settings_card.addWidget(self._make_section_title(f"{ICON['settings']}  Cấu hình nhanh"))
         self.src_combo = QComboBox()
+        self.src_combo.setObjectName("src_combo")
+        self.src_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         for v in LANGUAGES.values():
             self.src_combo.addItem(v)
         settings_card.addWidget(FieldRow(f"{ICON['lang']}  Ngôn ngữ nguồn", self.src_combo))
         self.tgt_combo = QComboBox()
+        self.tgt_combo.setObjectName("tgt_combo")
+        self.tgt_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         for v in TARGET_LANGUAGES.values():
             self.tgt_combo.addItem(v)
         settings_card.addWidget(FieldRow(f"{ICON['lang']}  Ngôn ngữ đích", self.tgt_combo))
         self.mode_combo = QComboBox()
+        self.mode_combo.setObjectName("mode_combo")
+        self.mode_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         for v in TRANSLATION_MODES.values():
             self.mode_combo.addItem(v)
         settings_card.addWidget(FieldRow(f"{ICON['mode']}  Chế độ dịch", self.mode_combo))
@@ -813,7 +838,24 @@ class WorkspacePage(QWidget):
 class SettingsPage(QWidget):
     def __init__(self, app: "App", parent=None):
         super().__init__(parent)
-        v = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setObjectName("settingsScroll")
+        outer.addWidget(scroll)
+
+        container = QWidget()
+        container.setMaximumWidth(720)
+        cl = QVBoxLayout(container)
+        cl.setContentsMargins(8, 8, 8, 8)
+        cl.setSpacing(16)
+        cl.addStretch()
+
+        v = QVBoxLayout()
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(16)
 
@@ -821,13 +863,20 @@ class SettingsPage(QWidget):
         whisper_card = Card()
         title = QLabel(f"{ICON['mic']}  Whisper")
         title.setObjectName("sectionTitle")
+        title.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
         whisper_card.addWidget(title)
 
         self.model_combo = QComboBox()
+        self.model_combo.setObjectName("model_combo")
+        self.model_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.model_combo.setMinimumWidth(180)
         self.model_combo.addItems(["tiny", "base", "small", "medium", "large-v3"])
         whisper_card.addWidget(FieldRow("Model size", self.model_combo))
 
         self.device_combo = QComboBox()
+        self.device_combo.setObjectName("device_combo")
+        self.device_combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.device_combo.setMinimumWidth(120)
         self.device_combo.addItems(["cuda", "cpu"])
         whisper_card.addWidget(FieldRow("Device", self.device_combo))
         v.addWidget(whisper_card)
@@ -836,10 +885,12 @@ class SettingsPage(QWidget):
         pipe_card = Card()
         title2 = QLabel(f"{ICON['zap']}  Pipeline")
         title2.setObjectName("sectionTitle")
+        title2.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
         pipe_card.addWidget(title2)
 
         self.workers_edit = QLineEdit()
         self.workers_edit.setPlaceholderText("1")
+        self.workers_edit.setMaximumWidth(120)
         pipe_card.addWidget(FieldRow("Số worker song song", self.workers_edit))
 
         self.split_cb = QCheckBox("Tách sub dài (>6s)")
@@ -853,42 +904,52 @@ class SettingsPage(QWidget):
         llm_card = Card()
         llm_title = QLabel(f"{ICON['zap']}  LLM (Advanced)")
         llm_title.setObjectName("sectionTitle")
+        llm_title.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
         llm_card.addWidget(llm_title)
 
         self.num_predict_edit = QLineEdit()
         self.num_predict_edit.setPlaceholderText("2048")
+        self.num_predict_edit.setMaximumWidth(140)
         llm_card.addWidget(FieldRow("num_predict (token tối đa)", self.num_predict_edit))
 
         self.temperature_edit = QLineEdit()
         self.temperature_edit.setPlaceholderText("0.05")
+        self.temperature_edit.setMaximumWidth(120)
         llm_card.addWidget(FieldRow("temperature", self.temperature_edit))
 
         self.timeout_edit = QLineEdit()
         self.timeout_edit.setPlaceholderText("180 (giây)")
+        self.timeout_edit.setMaximumWidth(120)
         llm_card.addWidget(FieldRow("timeout", self.timeout_edit))
 
         self.ollama_url_edit = QLineEdit()
         self.ollama_url_edit.setPlaceholderText("http://localhost:11434/api/generate")
+        self.ollama_url_edit.setMaximumWidth(360)
         llm_card.addWidget(FieldRow("Ollama URL", self.ollama_url_edit))
 
         # Pipeline card 2 - advanced
         pipe2_card = Card()
         pipe2_title = QLabel(f"{ICON['zap']}  Pipeline (Advanced)")
         pipe2_title.setObjectName("sectionTitle")
+        pipe2_title.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
         pipe2_card.addWidget(pipe2_title)
 
         self.max_retries_edit = QLineEdit()
         self.max_retries_edit.setPlaceholderText("5")
+        self.max_retries_edit.setMaximumWidth(120)
         pipe2_card.addWidget(FieldRow("Max retries", self.max_retries_edit))
 
         self.checkpoint_edit = QLineEdit()
         self.checkpoint_edit.setPlaceholderText("20")
+        self.checkpoint_edit.setMaximumWidth(140)
         pipe2_card.addWidget(FieldRow("Checkpoint interval", self.checkpoint_edit))
 
         v.addWidget(pipe_card)
         v.addWidget(llm_card)
         v.addWidget(pipe2_card)
-        v.addStretch()
+        cl.addLayout(v)
+        cl.addStretch()
+        scroll.setWidget(container)
 
 
 class GlossaryPage(QWidget):
@@ -903,6 +964,7 @@ class GlossaryPage(QWidget):
         toolbar = QHBoxLayout()
         title = QLabel(f"{ICON['book']}  Glossary (từ điển dịch thuật)")
         title.setObjectName("sectionTitle")
+        title.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
         toolbar.addWidget(title)
         toolbar.addStretch()
         self.add_btn = QPushButton(f"{ICON['plus']}  Thêm")
@@ -1070,11 +1132,13 @@ class LogPage(QWidget):
         toolbar = QHBoxLayout()
         title = QLabel(f"{ICON['log']}  Log")
         title.setObjectName("sectionTitle")
+        title.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
         toolbar.addWidget(title)
         toolbar.addStretch()
 
         # Tag filter
         self.filter_combo = QComboBox()
+        self.filter_combo.setObjectName("filter_combo")
         self.filter_combo.addItems(["ALL", "INFO", "OK", "WARN", "ERR"])
         self.filter_combo.setMinimumWidth(80)
         toolbar.addWidget(QLabel("Filter:"))

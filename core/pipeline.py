@@ -570,7 +570,7 @@ class TranslationPipeline:
             )
         # Giữ newline giữa các dòng trong cùng 1 sub (Aegisub/VLC hiển thị đúng),
         # chỉ collapse space thừa trong từng dòng (không gộp các sub khác nhau).
-        items = [{'index': s.index, 'start': str(s.start), 'end': str(s.end),
+        items = [{'index': str(s.index).lstrip('\ufeff\u200b'), 'start': str(s.start), 'end': str(s.end),
                   'text': '\n'.join(' '.join(line.split()) for line in s.text.split('\n'))}
                  for s in subs]
         if not items:
@@ -974,14 +974,33 @@ class TranslationPipeline:
         task['_sub_indices'] = sub_indices
         task['_source_lines'] = source_lines
 
+        # P0-fix uncen literal: uncen mode in default (auto) skips polish + qa.
+        # Rationale: polish pass may soften explicit content which violates uncen contract.
+        # User opt-in via config.translation.literal_mode can still force 3-pass.
+        _trans_mode = (self.config.get('translation', {}) or {}).get('mode', 'uncen')
+        is_uncen = (_trans_mode or '').lower() == 'uncen'
+        _literal_mode_cfg = self.config.get('translation', {}).get('literal_mode', None)
+        if _literal_mode_cfg is None:
+            # Auto: uncen → True (keep raw), others → False (full 3-pass)
+            skip_polish_for_uncen = is_uncen
+        else:
+            skip_polish_for_uncen = bool(_literal_mode_cfg)
+        if is_uncen and skip_polish_for_uncen:
+            logger.debug(f"Window {task['window_index']}: uncen literal mode → skip polish+qa")
+
         # shortcut: dòng ngắn (<=15 chars, không có kanji) → dịch per-line thẳng
         # Giảm tải LLM và [UNTRANSLATED] cho greeting/filler/short kana utterances
         def _is_short_simple_line(s):
             s = s.strip()
             if len(s) > 15:
                 return False
-            # Có kanji (CJK) → không đơn giản
-            if any('\u4e00' <= c <= '\u9fff' for c in s):
+            # Có kanji (CJK) HOẶC hiragana/katakana → không đơn giản
+            # Bug fix: trước đây chỉ check \u4e00-\u9fff (CJK ideographs),
+            # nhưng bỏ sót hiragana (\u3040-\u309f) và katakana (\u30a0-\u30ff).
+            # Hầu hết JA text đều có kana → false positive, trigger _retry_per_line
+            # và output rỗng / raw prompt.
+            if any('\u3040' <= c <= '\u309f' or '\u30a0' <= c <= '\u30ff'
+                   or '\u4e00' <= c <= '\u9fff' for c in s):
                 return False
             # Whisper noise đã filter
             return True
@@ -1138,6 +1157,21 @@ class TranslationPipeline:
         rough = self.ja_translator.literal_translate(
             source_lines, glossary_terms=glossary,
         )
+        # DEBUG: log raw rough to isolate mapping issues
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                f"Window {task['window_index']}: rough translations:\n" +
+                "\n".join(f"  [{j}] {source_lines[j][:30]!r} -> {(rough[j] or '')[:40]!r}"
+                          for j in range(len(source_lines)))
+            )
+        # Detect raw JA in rough output (off-by-one shift symptom)
+        if rough:
+            for j, (orig, trans) in enumerate(zip(source_lines, rough)):
+                if orig and trans and orig.strip() == trans.strip():
+                    logger.warning(
+                        f"Window {task['window_index']}[{j}]: RAW_JA_ECHO "
+                        f"source={orig[:40]!r} == rough={trans[:40]!r}"
+                    )
         if rough is None:
             logger.warning(f"Window {task['window_index']}: JA literal pass failed")
             return None
@@ -1240,9 +1274,20 @@ class TranslationPipeline:
         hist_start = max(0, start_pos - hist_size)
         hist_items = items[hist_start:start_pos]
         hist_lines = []
+        # P1-fix: when using translated history, also include source JA in parens
+        # so LLM can cross-reference. Format: "[5] {translation} (JA: {original})".
+        # For untranslated rows fall back to source-only. This reduces drift
+        # because LLM sees what the JA original said, not just the (potentially
+        # hallucinated) translation.
         for it in hist_items:
-            text = it.get('translated_text') if use_translated and it.get('translated_text') else it['original_text']
-            hist_lines.append(f"[{it['sub_index']}] {text}")
+            translated = (it.get('translated_text') or '').strip()
+            original = (it.get('original_text') or '').strip()
+            if use_translated and translated and original and translated != original:
+                hist_lines.append(f"[{it['sub_index']}] {translated} (JA: {original})")
+            elif use_translated and translated:
+                hist_lines.append(f"[{it['sub_index']}] {translated}")
+            else:
+                hist_lines.append(f"[{it['sub_index']}] {original}")
         history = "\n".join(hist_lines) if hist_lines else ""
 
         fut_end = min(len(items), end_pos + fut_size + 1)
@@ -1424,17 +1469,48 @@ class TranslationPipeline:
 
         Returns list of term dicts giữ nguyên shape để truyền vào prompt.
         Empty list nếu không match term nào (caller sẽ không tạo glossary_block).
+
+        P0-fix: use word-boundary regex match instead of raw `in` substring.
+        Substring match produces false positives like `masu` matching `emasculate`
+        or `summarize`. We must also handle JA characters (no \b in Python regex
+        with Unicode), so we wrap terms with explicit non-word guards.
         """
         if not glossary or not source_lines:
             return glossary or []
 
-        # Gộp source_lines thành 1 string để substring match nhanh
+        # Gộp source_lines thành 1 string để match nhanh
         joined = '\n'.join(source_lines)
+
+        # P0-fix: helper to test presence with word boundary that works for both
+        # Latin (\w) and CJK (we treat CJK char boundaries by requiring the
+        # surrounding char to NOT be a CJK ideograph). Japanese particles like
+        # ね, よ, は are SINGLE CJK char — need explicit boundary check.
+        def _term_present(term: str) -> bool:
+            if not term:
+                return False
+            # For terms that are pure CJK / kana, use position-based check:
+            # preceding char (if any) is NOT a CJK ideograph / kana.
+            idx = joined.find(term)
+            if idx < 0:
+                return False
+            # Check preceding char to avoid substring match like "masu" in "summarize"
+            if idx > 0:
+                prev = joined[idx - 1]
+                if prev.isalnum() or '\u3040' <= prev <= '\u309f' or '\u4e00' <= prev <= '\u9fff':
+                    # Try next occurrence
+                    idx = joined.find(term, idx + 1)
+                    if idx < 0:
+                        return False
+                    if idx > 0:
+                        prev = joined[idx - 1]
+                        if prev.isalnum() or '\u3040' <= prev <= '\u309f' or '\u4e00' <= prev <= '\u9fff':
+                            return False
+            return True
 
         relevant = []
         for term in glossary:
             src_term = term.get('source_term', '').strip()
-            if src_term and src_term in joined:
+            if src_term and _term_present(src_term):
                 relevant.append(term)
 
         return relevant

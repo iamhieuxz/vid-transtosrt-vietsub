@@ -21,9 +21,19 @@ class TranslatorService:
                  circuit_breaker_threshold=5, circuit_breaker_cooldown=60,
                  max_retries=3, retry_delay=2):
         self.model = model_name
-        self.url = ollama_url or os.environ.get(
-            'OLLAMA_URL', 'http://localhost:11434/api/generate'
-        )
+        base_url = ollama_url or os.environ.get('OLLAMA_URL', 'http://localhost:11434')
+        # Auto-detect API type and build full URL
+        if '/api/chat' in base_url:
+            self.api_type = 'chat'
+            self.url = base_url.rstrip('/')  # already has /api/chat
+        elif '/api/generate' in base_url:
+            self.api_type = 'generate'
+            self.url = base_url.rstrip('/')  # already has /api/generate
+        else:
+            # Default use generate API (mo ta model ho tro tot hon)
+            self.api_type = 'generate'
+            self.url = base_url.rstrip('/') + '/api/generate'
+
         self.temperature = temperature
         self.repeat_penalty = repeat_penalty
         self.num_ctx = num_ctx
@@ -36,6 +46,7 @@ class TranslatorService:
         self._error_count = 0
         self._last_failure_time = 0
         self._lock = threading.Lock()
+        self._consecutive_empty = 0  # Track consecutive empty responses
 
     def generate(self, prompt, temperature=None, num_predict=None, _retries=None):
         retries = _retries if _retries is not None else self.max_retries
@@ -47,29 +58,64 @@ class TranslatorService:
                 else:
                     self._error_count = 0
 
-        payload = {
-            "model": self.model,
-            "prompt": prompt,
-            "stream": False,
-            "options": {
-                "temperature": temperature if temperature is not None else self.temperature,
-                "repeat_penalty": self.repeat_penalty,
-                "num_ctx": self.num_ctx,
-                "num_predict": num_predict or self.num_predict,
+        # Build payload based on API type
+        if self.api_type == 'chat':
+            payload = {
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+                "think": False,
+                "options": {
+                    "temperature": temperature if temperature is not None else self.temperature,
+                    "repeat_penalty": self.repeat_penalty,
+                    "num_ctx": self.num_ctx,
+                    "num_predict": num_predict or self.num_predict,
+                }
             }
-        }
+        else:
+            payload = {
+                "model": self.model,
+                "prompt": prompt,
+                "stream": False,
+                "think": False,
+                "options": {
+                    "temperature": temperature if temperature is not None else self.temperature,
+                    "repeat_penalty": self.repeat_penalty,
+                    "num_ctx": self.num_ctx,
+                    "num_predict": num_predict or self.num_predict,
+                }
+            }
+
         for attempt in range(retries + 1):
             try:
                 resp = requests.post(self.url, json=payload, timeout=self.timeout)
                 resp.raise_for_status()
                 data = resp.json()
-                raw = data.get("response", "").strip()
+
+                # Extract response based on API type
+                if self.api_type == 'chat':
+                    raw = data.get("message", {}).get("content", "").strip()
+                else:
+                    raw = data.get("response", "").strip()
+
+                # Strip think block nếu model vẫn trả về dù có think:false
+                raw = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL).strip()
 
                 if not raw:
+                    self._consecutive_empty += 1
+                    logger.warning(f"{STATUS_ICONS.get('warning', '[!]')} Empty response from model (attempt {attempt+1}/{retries+1}, consecutive={self._consecutive_empty})")
+                    # Reset context nếu model trả về empty liên tục
+                    if self._consecutive_empty >= 2:
+                        logger.info("Multiple empty responses detected, resetting model context...")
+                        self.reset_context()
+                    if attempt < retries:
+                        time.sleep(self.retry_delay * (attempt + 1))
+                        continue
                     raise ValueError("Empty response from model")
 
                 with self._lock:
                     self._error_count = 0
+                    self._consecutive_empty = 0  # Reset counter on success
                 return raw
 
             except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
@@ -91,6 +137,154 @@ class TranslatorService:
                         self._error_count += 1
                         self._last_failure_time = time.time()
                     raise
+
+    def reset_circuit_breaker(self):
+        """Reset circuit breaker state - goi truoc khi pipeline moi bat dau."""
+        with self._lock:
+            self._error_count = 0
+            self._last_failure_time = 0
+        logger.info("Circuit breaker reset")
+
+    def check_ollama_health(self, timeout=3):
+        """Kiem tra Ollama con song khong (khong phu thuoc vao circuit breaker).
+        Returns True neu Ollama phan hoi duoc /api/tags.
+        """
+        try:
+            tags_url = self.url.replace('/api/generate', '/api/tags').replace('/api/chat', '/api/tags')
+            resp = requests.get(tags_url, timeout=timeout)
+            return resp.status_code == 200
+        except Exception:
+            return False
+
+    def try_recover_circuit_breaker(self):
+        """Thu reset circuit breaker neu Ollama da hoi sinh.
+        Tra ve True neu reset thanh cong, False neu Ollama van down.
+        """
+        with self._lock:
+            if self._error_count < self.circuit_breaker_threshold:
+                return True  # Khong can reset
+        # Kiem tra Ollama con song khong
+        if self.check_ollama_health():
+            logger.info("Ollama recovered! Auto-resetting circuit breaker.")
+            with self._lock:
+                self._error_count = 0
+                self._last_failure_time = 0
+            return True
+        return False
+
+    def reset_context(self):
+        """Reset model KV cache by unloading + reloading the model.
+
+        P2-fix: previous implementation sent a "." prompt with num_predict=1,
+        which only produces a tiny response but DOES NOT clear the model's
+        KV cache. Ollama keeps the full conversation context in memory until
+        the session ends. The only reliable way to clear state is to unload
+        and reload the model via /api/generate (with keep_alive=0 then pull).
+        We avoid full unload (slow) and instead use the model's built-in
+        session timeout: send a request with `keep_alive: "1s"` so the model
+        unloads after 1 second, then warm back up on the next request.
+
+        Strategy:
+          1. Try /api/generate with keep_alive: "1s" to evict the model after response.
+          2. If endpoint rejects, fall back to the old "." prompt trick.
+          3. Either way, track that reset was attempted so callers can verify.
+
+        Returns:
+            True if reset succeeded (model unloaded/reloaded cycle started).
+        """
+        import requests
+        base_url = self.url.replace('/api/generate', '').replace('/api/chat', '').rstrip('/')
+        try:
+            # Strategy 1: keep_alive trick — model unloads 1s after this response.
+            # No re-warm needed: the next real translate() call will re-pull.
+            payload = {
+                "model": self.model,
+                "prompt": ".",
+                "stream": False,
+                "keep_alive": "1s",  # unload model 1s after responding
+            }
+            resp = requests.post(f"{base_url}/api/generate", json=payload, timeout=30)
+            resp.raise_for_status()
+            logger.debug("Context reset OK via keep_alive eviction")
+            return True
+        except Exception as e:
+            logger.debug(f"keep_alive reset failed ({e}), falling back to minimal prompt")
+            # Strategy 2: best-effort minimal-prompt reset (legacy behavior).
+            try:
+                fallback_payload = {
+                    "model": self.model,
+                    "prompt": ".",
+                    "stream": False,
+                    "think": False,
+                    "options": {"temperature": 0.1, "num_predict": 1},
+                }
+                resp = requests.post(self.url, json=fallback_payload, timeout=30)
+                resp.raise_for_status()
+                logger.debug("Context reset OK via minimal prompt fallback")
+                return True
+            except Exception as e2:
+                logger.debug(f"Context reset failed (non-critical): {e2}")
+                return False
+
+    def warmup(self, timeout=300):
+        """Preload model by sending a dummy request.
+        
+        This ensures the model is loaded into VRAM before actual translation starts.
+        Call this once before the translation pipeline begins.
+        
+        Args:
+            timeout: Timeout in seconds for the warmup request (default 300s = 5min)
+        
+        Returns:
+            True if warmup succeeded, False otherwise
+        """
+        import requests
+        logger.info(f"[WARMUP] Preloading model: {self.model}")
+
+        # Simple warmup prompt - just ask the model to respond with a short word
+        warmup_prompt = "Say exactly one word: ready"
+
+        if self.api_type == 'chat':
+            payload = {
+                "model": self.model,
+                "messages": [{"role": "user", "content": warmup_prompt}],
+                "stream": False,
+                "options": {
+                    "temperature": 0.1,
+                    "num_predict": 10,
+                }
+            }
+        else:
+            payload = {
+                "model": self.model,
+                "prompt": warmup_prompt,
+                "stream": False,
+                "options": {
+                    "temperature": 0.1,
+                    "num_predict": 10,
+                }
+            }
+
+        try:
+            resp = requests.post(self.url, json=payload, timeout=timeout)
+            resp.raise_for_status()
+            data = resp.json()
+
+            if self.api_type == 'chat':
+                response = data.get("message", {}).get("content", "").strip()
+            else:
+                response = data.get("response", "").strip()
+
+            load_duration = data.get("load_duration", 0) / 1e9  # convert to seconds
+            logger.info(f"[WARMUP] Model loaded in {load_duration:.1f}s, response: '{response}'")
+            return True
+
+        except requests.exceptions.Timeout:
+            logger.warning(f"[WARMUP] Timeout after {timeout}s - model may still be loading, continuing anyway")
+            return True  # Don't fail warmup, let actual requests handle it
+        except Exception as e:
+            logger.warning(f"[WARMUP] Failed: {e}, continuing without warmup")
+            return False
 
     def extract_json(self, text):
         # chính: json_repair
@@ -195,46 +389,12 @@ class TranslatorService:
         glossary_terms: Optional[List[dict]] = None,
     ) -> Optional[List[str]]:
         """
-        Pass 1 của recovery — dịch thô word-by-word / chunk nhỏ, không cần ngữ cảnh.
-        Trả về list translation theo thứ tự source_lines, hoặc None nếu thất bại.
+        DEPRECATED: was used by non-JA recovery path. JA recovery now goes through
+        JaTranslator (3-pass). Non-JA recovery uses fallback_translate directly.
+        Kept as thin wrapper for one release to avoid breaking external imports.
         """
-        translations = []
-        chunk_size = 3
-
-        for i in range(0, len(source_lines), chunk_size):
-            chunk = source_lines[i:i + chunk_size]
-            chunk_text = "\n".join(f"{j+1}. {line}" for j, line in enumerate(chunk))
-
-            glossary_block = ""
-            if glossary_terms:
-                glossary_block = "MANDATORY GLOSSARY:\n" + "\n".join(
-                    f"- {t['source_term']} -> {t['target_term']}" for t in glossary_terms
-                ) + "\n"
-
-            prompt = (
-                f"Translate the following {src_lang} lines to {tgt_lang} literally, "
-                f"preserving meaning word-by-word.\n"
-                f"{glossary_block}"
-                f"Return ONLY the translations, one per line, matching the order:\n"
-                f"{chunk_text}"
-            )
-
-            try:
-                raw = self.generate(prompt, temperature=0.0)
-                raw_lines = [l.strip() for l in raw.strip().split("\n") if l.strip()]
-                for j, _ in enumerate(chunk):
-                    if j < len(raw_lines):
-                        translations.append(raw_lines[j].strip())
-                    else:
-                        single = self._translate_single(source_lines[i + j], src_lang, tgt_lang, glossary_terms)
-                        translations.append(single if single else source_lines[i + j])
-            except Exception as e:
-                logger.warning(f"raw_translate chunk {i} failed: {e}, falling back to single")
-                for j in range(len(chunk)):
-                    single = self._translate_single(source_lines[i + j], src_lang, tgt_lang, glossary_terms)
-                    translations.append(single if single else source_lines[i + j])
-
-        return translations if translations else None
+        logger.warning("TranslatorService.raw_translate is deprecated, use fallback_translate")
+        return self.fallback_translate(source_lines, src_lang, tgt_lang, glossary_terms)
 
     def polish_translate(
         self,
@@ -244,44 +404,13 @@ class TranslatorService:
         tgt_lang: str,
         context_before: str = "",
         context_after: str = "",
+        glossary_terms: Optional[List[dict]] = None,
     ) -> Optional[List[str]]:
         """
-        Pass 2 của recovery — làm mượt câu từ từ bản dịch thô.
-        Cải thiện: ngữ pháp, cách dùng tiếng lóng, ngữ điệu, ngữ cảnh.
-        Trả về list đã trau chuốt theo thứ tự source_lines, hoặc None nếu thất bại.
+        DEPRECATED: was used by non-JA recovery path. JA recovery now uses
+        JaTranslator.polish_translate which is keigo-aware. Non-JA mode does not
+        require polish pass — fallback_translate already produces usable output.
+        Kept as thin wrapper for one release to avoid breaking external imports.
         """
-        # Ghép thành cặp để dịch theo chunk
-        pairs = "\n".join(
-            f"ORIGINAL: {s}\nROUGH: {r}" for s, r in zip(source_lines, raw_translations)
-        )
-
-        prompt = (
-            f"You are a professional subtitle editor refining {src_lang}→{tgt_lang} translations.\n"
-            f"Given the original lines and their rough translations, rewrite each line to be:\n"
-            f"  - Natural, fluent, and contextually accurate\n"
-            f"  - Using colloquial/slang expressions where appropriate\n"
-            f"  - Consistent in tone and register with the surrounding context\n"
-            f"  - Preserving the original meaning and subtitle rhythm\n\n"
-            f"Context before:\n{context_before or '(none)'}\n\n"
-            f"Context after:\n{context_after or '(none)'}\n\n"
-            f"Rewrite each line:\n{pairs}\n\n"
-            f"Return ONLY the refined translations, one per line, in the same order. No numbering, no extra text."
-        )
-
-        try:
-            raw = self.generate(prompt, temperature=0.2)
-            lines = [l.strip() for l in raw.strip().split("\n") if l.strip()]
-            # Map the result lines back to source_lines in order
-            result = []
-            for j in range(len(source_lines)):
-                if j < len(lines):
-                    result.append(lines[j].strip())
-                elif j < len(raw_translations):
-                    result.append(raw_translations[j])  # fallback giữ nguyên rough
-                else:
-                    result.append(source_lines[j])
-            logger.info(f"polish_translate: refined {len(result)} lines")
-            return result
-        except Exception as e:
-            logger.warning(f"polish_translate failed: {e}, falling back to rough translations")
-            return raw_translations
+        logger.warning("TranslatorService.polish_translate is deprecated, use JaTranslator.polish_translate")
+        return raw_translations

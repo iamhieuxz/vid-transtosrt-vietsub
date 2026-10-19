@@ -192,32 +192,51 @@ _ENGLISH_RE = re.compile(
 # Rule 5: Number 2 -> "vâng" (LLM hallucination)
 # -----------------------------------------------------------------------------
 # LLM hay gõ "vâng" thay vì "hai" khi dịch JA số 2 (二人, 二つ, etc.).
-# Catches các pattern thường gặp: vâng người, cả vâng, vâng đứa, vâng món...
 # shortcut: chỉ cover số 2 (vì số 3+ thường viết "ba", "bốn" thay vì digit)
+#
+# P1-6 fix: replace hardcoded list with a heuristic regex that catches
+# "vâng <countable_noun>" pattern. The old list only matched 17 specific
+# phrases; LLM produces dozens of variants ("vây người", "vâng bạn bè", etc.)
+# that slipped through. The new rule matches any "vâng" followed by a known
+# Vietnamese counter/noun, plus a few legacy specific patterns for safety.
 
-_VANG_TO_HAI = [
+# Countable nouns that follow the number 2 in Vietnamese (kept lowercase)
+_VANG_COUNTERS = (
+    r'người|đứa|con|cái|món|cách|bên|ngày|lần|tuần|tháng|năm|giờ|phút|'
+    r'chị em|anh em|vợ chồng|bạn|người|đứa|bạn bè|em bé|thằng|con gái|'
+    r'con trai|đứa con|người yêu|người lạ|người bạn|thế hệ|thế kỷ|'
+    r'thành viên|người chơi|kẻ|người ta|người kia|người đó|cô|chú|bác|'
+    r'cậu|ông|bà|anh|chị|em|thầy|cô giáo|gia đình|gia đình|cặp|đôi|'
+    r'cánh|cửa|bức|tấm|chiếc|quyển|cuốn|quả|trái|con vật|con chó|con mèo|'
+    r'con đường|cung đường|đường|bước|bước chân|chân|tay|cánh tay|bàn tay|'
+    r'mắt|con mắt|đôi mắt|tai|đôi tai|lưỡi|cái lưỡi|miệng|cái miệng'
+)
+
+# Specific cases that don't fit the "vâng <noun>" pattern but are still wrong
+_VANG_SPECIFIC = [
     (r'\bcả vâng\b', 'cả hai'),
-    (r'\bvâng người\b', 'hai người'),
-    (r'\vâng người\b', 'hai người'),
-    (r'\bvâng bên\b', 'hai bên'),
-    (r'\bvâng đứa\b', 'hai đứa'),
-    (r'\bvâng con\b', 'hai con'),
-    (r'\bvâng món\b', 'hai món'),
-    (r'\bvâng cách\b', 'hai cách'),
-    (r'\bvâng ngày\b', 'hai ngày'),
-    (r'\bvâng lần\b', 'hai lần'),
-    (r'\bvâng tuần\b', 'hai tuần'),
-    (r'\bvâng tháng\b', 'hai tháng'),
-    (r'\bvâng năm\b', 'hai năm'),
-    (r'\bvâng giờ\b', 'hai giờ'),
-    (r'\bvâng phút\b', 'hai phút'),
-    (r'\bvâng đứa\b', 'hai đứa'),
-    (r'\bvâng chị em\b', 'hai chị em'),
-    (r'\bvâng anh em\b', 'hai anh em'),
-    (r'\bvâng vợ chồng\b', 'hai vợ chồng'),
 ]
 
-_VANG_RE = re.compile('|'.join(p for p, _ in _VANG_TO_HAI), re.IGNORECASE)
+# Main heuristic: "vâng" before a known counter -> "hai <counter>"
+_VANG_HEURISTIC_RE = re.compile(
+    r'\bvâng\s+(' + _VANG_COUNTERS + r')\b',
+    re.IGNORECASE | re.UNICODE,
+)
+
+# Combined regex: specific cases first, then heuristic
+_VANG_RE = re.compile(
+    '|'.join(p for p, _ in _VANG_SPECIFIC) + '|' + _VANG_HEURISTIC_RE.pattern,
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _replace_vang(match: 're.Match') -> str:
+    """Convert a 'vâng' match to 'hai', preserving the trailing word."""
+    matched = match.group(0)
+    if 'vâng' not in matched.lower():
+        return matched
+    # Replace just the first 'vâng' occurrence; rest of the match is the counter
+    return re.sub(r'\bvâng\b', 'hai', matched, count=1, flags=re.IGNORECASE)
 
 
 # -----------------------------------------------------------------------------
@@ -273,6 +292,17 @@ class RuleBasedPostProcessor:
             'total': 0,
             'changed': 0,
         }
+        # character_names config: tên riêng dùng để fix mistaken aliases
+        # Format: [{canonical, aliases, mistaken_aliases}, ...]
+        self.character_names = []
+
+    def set_character_names(self, character_names: list):
+        """Inject character_names từ config để fix mistaken aliases.
+
+        Mỗi entry có thể có mistaken_aliases (Whisper nghe sai) — sẽ được
+        replace bằng canonical khi gặp trong bản dịch.
+        """
+        self.character_names = character_names or []
 
     def process_line(self, text: str) -> str:
         """Post-process một dòng đã dịch."""
@@ -306,6 +336,8 @@ class RuleBasedPostProcessor:
 
         # 6. Fix "vâng" hallucination (LLM gõ "vâng" thay vì "hai")
         # shortcut: re.IGNORECASE để cover cả "Vâng" đầu câu; preserve case
+        # P1-6: now uses heuristic regex (catches any "vâng <counter>" pattern),
+        # not just 17 hardcoded phrases. Callback keeps the counter suffix.
         def _vang_in_match(m):
             # Replace only the "vâng" substring inside the match, keep suffix
             return re.sub('vâng', lambda c: 'Hai' if c.group(0)[0].isupper() else 'hai', m.group(0), flags=re.IGNORECASE)
@@ -318,7 +350,26 @@ class RuleBasedPostProcessor:
         # KHÔNG can thiệp vào các từ đã dịch đúng.
         text = re.sub(r'\s*(onani|seku\s?kusu|fera|paizuri|teiman)\s*', ' ', text, flags=re.IGNORECASE)
 
-        # 8. Fix punctuation
+        # 8. Fix mistaken character aliases (Whisper nghe sai tên nhân vật)
+        # VD: "Kasumi-san" → "Kana-san" (Whisper nghe 香菜 thành Kasumi)
+        # Áp dụng cho từng entry có mistaken_aliases.
+        if self.character_names:
+            for entry in self.character_names:
+                mistaken = entry.get('mistaken_aliases') or []
+                canonical = (entry.get('canonical') or '').strip()
+                if not mistaken or not canonical:
+                    continue
+                for alias in mistaken:
+                    if not alias:
+                        continue
+                    # Word boundary để tránh replace giữa từ (vd: "Kana" trong "Kanada")
+                    text = re.sub(
+                        r'\b' + re.escape(alias) + r'\b',
+                        canonical,
+                        text,
+                    )
+
+        # 9. Fix punctuation
         text = _fix_punctuation(text)
 
         # 9. Final whitespace

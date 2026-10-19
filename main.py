@@ -664,7 +664,9 @@ def get_active_model_config(config):
             'temperature': cfg.get('temperature', 0.05),
             'repeat_penalty': cfg.get('repeat_penalty', 1.15),
             'num_ctx': cfg.get('num_ctx', 6144),
-            'num_predict': cfg.get('num_predict', 1024),
+            # P1-fix: uncen dialogues are often long and need full output.
+            # 1024 tokens truncates long JAV lines mid-sentence. 2048 is safer.
+            'num_predict': cfg.get('num_predict', 2048),
             'timeout': cfg.get('timeout', 180),
         }
 
