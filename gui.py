@@ -1112,6 +1112,9 @@ class App(QMainWindow):
         self.setMinimumSize(1000, 640)
         self.resize(1100, 720)
 
+        # Enable drag-drop
+        self.setAcceptDrops(True)
+
         self.config = load_config()
         self.config_path = "config.yaml"
         self.is_running = False
@@ -1145,6 +1148,29 @@ class App(QMainWindow):
             self.log_bridge.message.emit("WARN", "Đóng GUI → đang dừng pipeline...")
             self._kill_running_process()
         event.accept()
+
+    # ---- Drag & drop --------------------------------------------------
+    def dragEnterEvent(self, event):
+        """Accept file drops on main window."""
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        """Handle dropped file → auto-fill input field."""
+        urls = event.mimeData().urls()
+        if not urls:
+            return
+        # Take first file with .srt/.mp4/.mkv extension
+        for url in urls:
+            path = url.toLocalFile()
+            if path and os.path.splitext(path)[1].lower() in ('.srt', '.mp4', '.mkv'):
+                self.page_workspace.input_row.setText(path)
+                self.set_status(f"Đã nhận file: {os.path.basename(path)}", "success")
+                event.acceptProposedAction()
+                return
+        event.ignore()
 
     # ---- UI build -----------------------------------------------------
     def _build_ui(self):

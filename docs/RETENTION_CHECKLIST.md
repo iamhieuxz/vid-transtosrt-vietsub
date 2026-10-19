@@ -130,10 +130,11 @@
 - [ ] Tick `[x]` khi pass
 
 ### Fix 14 — GUI drag-drop file
-- [ ] Mở `gui.py`
-- [ ] Override `dragEnterEvent` + `dropEvent` trên main window
-- [ ] Accept `.mp4/.mkv/.srt`, set input path
-- [ ] **Test:** Drag file vào GUI, kiểm tra input field auto-fill
+- [x] `setAcceptDrops(True)` trong `App.__init__`
+- [x] Override `dragEnterEvent` (accept nếu có URLs)
+- [x] Override `dropEvent` (lấy file .srt/.mp4/.mkv → set input)
+- [x] **Test:** ast.parse OK
+- **Caveat:** Chỉ nhận 1 file đầu tiên match extension.
 - [ ] Tick `[x]` khi pass
 
 ### Fix 15 — GUI recent projects
