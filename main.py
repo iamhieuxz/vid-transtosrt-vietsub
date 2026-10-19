@@ -1,10 +1,14 @@
-import yaml
-import logging
+# Force UTF-8 cho stdout/stderr de in tieng Viet co dau tren Windows console
+# (mac dinh cp1252 -> charmap crash khi gap \u1eb5 v.v.) - dat SAU import sys.
 import os
 import sys
 import argparse
 import shutil
 import time as _time
+import subprocess
+import requests
+import yaml
+import logging
 from rich.console import Console
 from rich.table import Table
 from core.database import Database
@@ -12,9 +16,16 @@ from core.pipeline import TranslationPipeline
 from core.transcriber import WhisperTranscriber
 from core.precheck import WhisperPreCheck, run_precheck
 
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+except (AttributeError, OSError):
+    pass  # Python < 3.7 hoac khong phai console (pipe file)
+
 __version__ = "1.2"
 
-console = Console()
+# Rich console: bat buoc UTF-8 de in tieng Viet co dau (fix Windows charmap)
+console = Console(legacy_windows=False)
 
 STATUS_ICONS = {
     'start': '[*]',
@@ -189,7 +200,7 @@ def get_target_lang_key(config) -> str:
 
 def get_mode_key(config) -> str:
     """Lay ma che do dich hien tai."""
-    mode = config.get('translation', {}).get('mode', 'default')
+    mode = config.get('translation', {}).get('mode', 'uncen')
     return mode
 
 
@@ -623,7 +634,7 @@ def validate_config(config):
         if 'name' not in config['project']:
             errors.append("Thieu 'name' trong cau hinh")
 
-    mode = config.get('translation', {}).get('mode', 'default')
+    mode = config.get('translation', {}).get('mode', 'uncen')
     if mode not in ('default', 'uncen'):
         errors.append(f"'translation.mode' phai la 'default' hoac 'uncen', hien tai: '{mode}'")
 
@@ -638,12 +649,26 @@ def validate_config(config):
 
 
 def get_active_model_config(config):
-    """Lay cau hinh model dang su dung dua tren che do dich."""
-    mode = get_mode_key(config)
+    """Resolve model config, with translation mode taking precedence."""
+    mode = str(get_mode_key(config) or 'default').strip().lower()
     source_lang = (config.get('project', {}).get('source_lang', '') or '').strip().lower()
+    models = config.get('models', {})
 
-    # Uu tien model theo ngon ngu (neu co cau hinh models.<lang>)
-    # Vi du: source_lang='japanese' -> models.ja neu co
+    # An explicit mode is an intentional model choice; do not let the language
+    # preset silently override the uncen model for Japanese projects.
+    if mode == 'uncen' and models.get('uncen'):
+        cfg = models['uncen']
+        return {
+            'name': cfg.get('name', 'huihui_ai/qwen3-abliterated:8b-v2'),
+            'ollama_url': cfg.get('ollama_url', 'http://localhost:11434/api/generate'),
+            'temperature': cfg.get('temperature', 0.05),
+            'repeat_penalty': cfg.get('repeat_penalty', 1.15),
+            'num_ctx': cfg.get('num_ctx', 6144),
+            'num_predict': cfg.get('num_predict', 1024),
+            'timeout': cfg.get('timeout', 180),
+        }
+
+    # In default mode, prefer a source-language-specific model when configured.
     lang_to_key = {
         'japanese': 'ja', 'tiếng nhật': 'ja', 'tieng nhat': 'ja', 'ja': 'ja',
         'chinese': 'zh', 'tiếng trung': 'zh', 'tieng trung': 'zh', 'zh': 'zh',
@@ -651,8 +676,8 @@ def get_active_model_config(config):
         'english': 'en', 'tiếng anh': 'en', 'tieng anh': 'en', 'en': 'en',
     }
     lang_key = lang_to_key.get(source_lang)
-    if lang_key and config.get('models', {}).get(lang_key):
-        cfg = config['models'][lang_key]
+    if lang_key and models.get(lang_key):
+        cfg = models[lang_key]
         return {
             'name': cfg.get('name', 'huihui_ai/hunyuan-mt-abliterated:7b-chimera'),
             'ollama_url': cfg.get('ollama_url', 'http://localhost:11434/api/generate'),
@@ -664,7 +689,7 @@ def get_active_model_config(config):
         }
 
     if mode == 'uncen':
-        uncen_cfg = config.get('models', {}).get('uncen', {})
+        uncen_cfg = models.get('uncen', {})
         return {
             'name': uncen_cfg.get('name', 'huihui_ai/qwen3-abliterated:8b-v2'),
             'ollama_url': uncen_cfg.get('ollama_url', 'http://localhost:11434/api/generate'),
@@ -675,7 +700,7 @@ def get_active_model_config(config):
             'timeout': uncen_cfg.get('timeout', 180),
         }
     else:
-        default_cfg = config.get('models', {}).get('default', {})
+        default_cfg = models.get('default', {})
         return {
             'name': default_cfg.get('name', 'huihui_ai/hunyuan-mt-abliterated:7b-chimera'),
             'ollama_url': default_cfg.get('ollama_url', 'http://localhost:11434/api/generate'),
@@ -894,13 +919,22 @@ def run_translation(config):
     mode = get_mode_key(config)
     mode_info = TRANSLATION_MODES.get(mode, TRANSLATION_MODES['default'])
     model_cfg = get_active_model_config(config)
+    config['model'] = model_cfg
 
     console.print(f"\n{STATUS_ICONS['start']} [cyan]Che do dich:[/cyan] {mode_info['display']}")
-    console.print(f"{STATUS_ICONS['start']} [cyan]Model:[/cyan] {model_cfg['name']}")
+    console.print(
+        f"{STATUS_ICONS['start']} [cyan]Model:[/cyan] {model_cfg['name']} "
+        f"([dim]source={get_source_lang_key(config)}, mode={mode}[/dim])"
+    )
 
     db = Database()
     project_name = config['project']['name']
     input_path = config['project']['input_srt']
+
+    # Check Ollama/model and video/audio before allocating the Whisper model.
+    if not _precheck_pipeline(config, input_path):
+        console.print(f"{STATUS_ICONS['error']} [red]Precheck fail. Kiem tra loi ben tren.[/red]")
+        return
 
     # Set original_video_path chi khi la file video (de luu vao DB)
     original_video_path = input_path if is_video_file(input_path) else None
@@ -924,7 +958,6 @@ def run_translation(config):
     if is_video_file(input_path):
         console.print(f"\n{STATUS_ICONS['processing']} [cyan]Phat hien file video, bat dau transcribe...[/cyan]")
         whisper_cfg = config.get('whisper', {})
-        transcriber = WhisperTranscriber(whisper_cfg)
 
         # File whisper: <folder project>/<project_name>_whisper.srt
         whisper_srt_path = _resolve_whisper_path(input_path)
@@ -940,14 +973,27 @@ def run_translation(config):
             if whisper_changed and os.path.exists(whisper_srt_path):
                 console.print(f"{STATUS_ICONS['warning']} [yellow]Whisper file changed: {change_msg}[/yellow]")
             console.print(f"{STATUS_ICONS['start']} [cyan]Transcribing video...[/cyan]")
+            transcriber = None
             try:
+                # The model is loaded exactly once, and this call verifies/downloads
+                # weights as needed before transcribing with the same instance.
+                transcriber = WhisperTranscriber(whisper_cfg)
                 transcriber.transcribe(input_path, whisper_srt_path, language=whisper_cfg.get('language'))
+                # Validate output: file phai co noi dung, neu 0 byte -> abort som
+                if os.path.exists(whisper_srt_path) and os.path.getsize(whisper_srt_path) == 0:
+                    raise ValueError(
+                        "Whisper tra ve file SRT 0 bytes (video co the im lang hoac "
+                        "khong co audio track). Kiem tra lai file video."
+                    )
                 console.print(f"{STATUS_ICONS['success']} [green]Da tao phu de:[/green] {whisper_srt_path}")
                 # Cap nhat cache sau khi tao moi
                 _update_whisper_cache(project_name, whisper_srt_path)
             except Exception as e:
                 console.print(f"{STATUS_ICONS['error']} [red]Loi transcribe:[/red] {e}")
                 return
+            finally:
+                if transcriber is not None:
+                    transcriber.clear_vram()
         else:
             console.print(f"{STATUS_ICONS['success']} [green]Da co phu de, su dung lai:[/green] {whisper_srt_path}")
 
@@ -962,9 +1008,14 @@ def run_translation(config):
         # Neu whisper file thay doi -> xoa DB + file SRT cu de chay lai
         if whisper_srt_path and whisper_changed:
             console.print(f"{STATUS_ICONS['warning']} [yellow]Xoa DB cu + file SRT de chay lai voi whisper moi...[/yellow]")
-            # Delete project record (will be recreated below with new input_srt)
-            _clear_project_db(project_id, db, clear_files=True, output_srt=proj.get('output_srt'), delete_project=True)
-            proj = None  # Reset de tao project moi voi path moi
+            # Keep the project row so its ID remains valid; clear dependent data
+            # and point the existing project at the refreshed Whisper transcript.
+            _clear_project_db(
+                project_id, db, clear_files=True,
+                output_srt=proj.get('output_srt'),
+                new_input_srt=whisper_srt_path,
+            )
+            proj['status'] = 'pending'
 
         if proj:
             if proj['status'] in ('completed', 'completed_with_errors'):
@@ -1081,11 +1132,155 @@ def run_translation(config):
             logger.warning(f"Pre-check failed (non-blocking): {e}")
             console.print(f"{STATUS_ICONS['warning']} [yellow]Pre-check loi (bo qua): {e}[/yellow]")
 
-    config['model'] = model_cfg
-
     console.print(f"\n{STATUS_ICONS['start']} [cyan]Bat dau dich...[/cyan]\n")
     pipeline = TranslationPipeline(config)
     pipeline.run(project_id)
+
+
+def _precheck_pipeline(config: dict, input_path: str) -> bool:
+    """Check input/audio, Ollama model, and available VRAM without loading Whisper."""
+    import requests as _req
+    from rich.console import Console as _C
+    from rich.table import Table as _T
+    _console = _C()
+    table = _T(title="[bold cyan]Precheck Pipeline[/bold cyan]", show_header=True, header_style="bold magenta")
+    table.add_column("Step", style="cyan", width=24)
+    table.add_column("Status", width=12)
+    table.add_column("Detail", style="dim")
+    errors = []
+    is_video = is_video_file(input_path)
+
+    # Check input and audio before any model work.
+    if not os.path.isfile(input_path):
+        errors.append(f"Input file not found: {input_path}")
+        table.add_row("Input file", "[red]FAIL[/red]", input_path)
+    else:
+        table.add_row("Input file", "[green]OK[/green]", input_path)
+
+    if is_video and os.path.isfile(input_path):
+        try:
+            probe = subprocess.run(
+                ['ffprobe', '-v', 'error', '-show_streams', '-select_streams', 'a',
+                 '-of', 'default=nw=1', input_path],
+                capture_output=True, text=True, timeout=10,
+            )
+            if probe.returncode == 0 and probe.stdout.strip():
+                table.add_row("Video audio track", "[green]OK[/green]", "found")
+            else:
+                errors.append(f"Video has no readable audio track: {probe.stderr.strip()[:120]}")
+                table.add_row("Video audio track", "[red]FAIL[/red]", "no audio stream")
+        except FileNotFoundError:
+            table.add_row("ffprobe", "[yellow]SKIP[/yellow]", "not in PATH; ffmpeg will validate during extraction")
+        except Exception as e:
+            errors.append(f"Audio precheck failed: {e}")
+            table.add_row("Video audio track", "[red]FAIL[/red]", str(e)[:80])
+
+    if errors:
+        _console.print(table)
+        for error in errors:
+            _console.print(f"[red]Precheck: {error}[/red]")
+        return False
+
+    # --- 1. Ollama ping ---
+    ollama_url = config.get('model', {}).get('ollama_url', 'http://localhost:11434')
+    base_url = ollama_url.replace('/api/generate', '').replace('/api/chat', '').rstrip('/')
+    try:
+        r = _req.get(f"{base_url}/api/tags", timeout=5)
+        if r.status_code == 200:
+            available_models = {m['name'] for m in r.json().get('models', [])}
+            table.add_row("Ollama server", "[green]OK[/green]", f"{base_url} ({len(available_models)} models)")
+        else:
+            errors.append(f"Ollama returned {r.status_code}")
+            table.add_row("Ollama server", "[red]FAIL[/red]", f"HTTP {r.status_code}")
+    except Exception as e:
+        errors.append(f"Ollama unreachable: {e}")
+        table.add_row("Ollama server", "[red]FAIL[/red]", f"{base_url} - {e}")
+        _console.print(table)
+        return False
+
+    # --- 2. Check + auto-pull the exact model selected for this run ---
+    needed_models = {config['model']['name']} if config.get('model', {}).get('name') else set()
+
+    for model_name in sorted(needed_models):
+        if model_name in available_models:
+            table.add_row(f"Model: {model_name}", "[green]OK[/green]", "available")
+            continue
+        # Auto-pull
+        table.add_row(f"Model: {model_name}", "[yellow]PULL[/yellow]", "downloading...")
+        _console.print(table)
+        try:
+            pull_resp = _req.post(
+                f"{base_url}/api/pull",
+                json={"name": model_name, "stream": True},
+                timeout=600, stream=True,
+            )
+            pull_resp.raise_for_status()
+            last_status = ""
+            for line in pull_resp.iter_lines():
+                if not line:
+                    continue
+                try:
+                    import json
+                    chunk = json.loads(line)
+                    status = chunk.get('status', '')
+                    if status and status != last_status:
+                        _console.print(f"  [dim]{model_name}: {status}[/dim]")
+                        last_status = status
+                except Exception:
+                    pass
+            # Verify
+            r2 = _req.get(f"{base_url}/api/tags", timeout=5)
+            available_models = {m['name'] for m in r2.json().get('models', [])}
+            if model_name in available_models:
+                table.add_row(f"Model: {model_name}", "[green]OK[/green]", "pulled")
+            else:
+                errors.append(f"Pull {model_name} completed but not in /api/tags")
+                table.add_row(f"Model: {model_name}", "[red]FAIL[/red]", "pulled but missing")
+        except Exception as e:
+            errors.append(f"Pull {model_name} failed: {e}")
+            table.add_row(f"Model: {model_name}", "[red]FAIL[/red]", str(e)[:50])
+
+    # --- 3. Whisper cache/VRAM inspection (no model instantiation) ---
+    whisper_cfg = config.get('whisper', {})
+    if is_video:
+        from core.transcriber import WhisperTranscriber
+        whisper_model = whisper_cfg.get('model_size', 'large-v3')
+        cache = WhisperTranscriber._check_model_cache(whisper_model)
+        cache_status = f"cached ({cache['total_mb']}MB)" if cache['cached'] else "not cached; will download during transcription"
+        table.add_row(f"Whisper: {whisper_model}", "[green]OK[/green]" if cache['cached'] else "[yellow]INFO[/yellow]", cache_status)
+
+    # --- 4. Pre-load VRAM check ---
+    vram_total = vram_free = None
+    try:
+        probe = subprocess.run(
+            ['nvidia-smi', '--query-gpu=memory.total,memory.free',
+             '--format=csv,noheader,nounits'],
+            capture_output=True, text=True, timeout=5,
+        )
+        if probe.returncode == 0 and probe.stdout.strip():
+            line = probe.stdout.strip().split('\n')[0]
+            vram_total, vram_free = [int(x.strip()) for x in line.split(',')[:2]]
+            if is_video:
+                whisper_model = whisper_cfg.get('model_size', 'large-v3')
+                need = WhisperTranscriber._estimate_min_vram_mb(whisper_model)
+            else:
+                need = 0
+            if need and vram_free < need:
+                table.add_row("VRAM", "[yellow]WARN[/yellow]",
+                              f"before load free={vram_free}MB, estimated need~{need}MB; Whisper may fallback to CPU")
+            else:
+                table.add_row("VRAM", "[green]OK[/green]", f"before load total={vram_total}MB, free={vram_free}MB")
+    except (FileNotFoundError, Exception):
+        table.add_row("VRAM", "[dim]SKIP[/dim]", "nvidia-smi not available")
+
+    _console.print(table)
+    if errors:
+        _console.print(f"\n[red][FAIL] Precheck có {len(errors)} lỗi:[/red]")
+        for e in errors:
+            _console.print(f"  - {e}")
+        return False
+    _console.print(f"\n[green][OK] Precheck pass - sẵn sàng chạy pipeline.[/green]")
+    return True
 
 
 def fix_srt_with_rules(input_path: str, output_path: str = None):
@@ -1230,6 +1425,11 @@ def main():
 
     if args.input or args.output or args.source_lang or args.target_lang or args.mode:
         save_config(config)
+        # shortcut: tự derive project name từ input path để tránh
+        # config còn name cũ (VD: JUL-409) ghi đè project ID sai
+        if args.input:
+            _auto_setup_project_paths(config, args.input)
+            config = load_config()  # reload sau save
         run_translation(config)
     else:
         interactive_mode(config)

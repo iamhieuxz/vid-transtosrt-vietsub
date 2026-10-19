@@ -223,11 +223,11 @@ class WhisperPreCheck:
             text = block.get('text', '')
             if not text:
                 continue
-            idx = block.get('index', 0)
+            idx = block.get('line_id', block.get('id', block.get('index', 0)))
             # Check pattern 1: standalone name
             for m in standalone_name.finditer(text):
                 self.issues.append({
-                    'line': idx,
+                    'line_id': idx,
                     'severity': 'warning',
                     'type': 'name_standalone',
                     'message': f"Tên riêng đứng riêng: {m.group(0).strip()!r} - "
@@ -236,7 +236,7 @@ class WhisperPreCheck:
             # Check pattern 2: wrong honorific
             for m in wrong_honorific.finditer(text):
                 self.issues.append({
-                    'line': idx,
+                    'line_id': idx,
                     'severity': 'warning',
                     'type': 'honorific_romaji',
                     'message': f"Honorific viết sai romaji: {m.group(0)!r} - "
@@ -245,7 +245,7 @@ class WhisperPreCheck:
             # Check pattern 3: colon/hyphen
             for m in colon_name.finditer(text):
                 self.issues.append({
-                    'line': idx,
+                    'line_id': idx,
                     'severity': 'warning',
                     'type': 'name_colon',
                     'message': f"Tên có dấu phân cách: {m.group(0)!r} - "
@@ -317,9 +317,12 @@ class WhisperPreCheck:
             lines.append("  CRITICAL ISSUES (cần review trước khi dịch):")
             lines.append(f"{'-'*60}")
             for issue in result['critical'][:20]:  # Top 20
-                lines.append(f"  Line {issue['line_id']}: {issue['pattern']}")
-                lines.append(f"    Text: {issue['text'][:70]}")
-                lines.append(f"    Fix:  {issue['suggestion']}")
+                line_id = issue.get('line_id', issue.get('line', '?'))
+                lines.append(f"  Line {line_id}: {issue.get('pattern', issue.get('type', 'issue'))}")
+                text = issue.get('text', issue.get('message', ''))
+                lines.append(f"    Text: {text[:70]}")
+                if issue.get('suggestion'):
+                    lines.append(f"    Fix:  {issue['suggestion']}")
                 lines.append("")
 
         if result['warnings']:
@@ -327,7 +330,10 @@ class WhisperPreCheck:
             lines.append(f"  WARNINGS ({len(result['warnings'])} total, top 10):")
             lines.append(f"{'-'*60}")
             for issue in result['warnings'][:10]:
-                lines.append(f"  Line {issue['line_id']}: {issue['pattern']} - {issue['text'][:50]}")
+                line_id = issue.get('line_id', issue.get('line', '?'))
+                label = issue.get('pattern', issue.get('type', 'issue'))
+                text = issue.get('text', issue.get('message', ''))
+                lines.append(f"  Line {line_id}: {label} - {text[:50]}")
 
         if result['suggestions']:
             lines.append(f"\n{'-'*60}")
@@ -347,12 +353,17 @@ def run_precheck(srt_path: str, source_lang: str = 'ja', auto_fix: bool = True) 
     """
     checker = WhisperPreCheck(source_lang=source_lang)
 
-    # Auto-fix đơn giản trước
+# Auto-fix đơn giản trước
     if auto_fix:
         srt_path = checker.auto_fix_simple(srt_path)
 
-    # Report
-    report_text = checker.report(srt_path)
+    # Report (shortcut: gán trước để tránh UnboundLocalError nếu report() raise)
+    report_text = ""
+    try:
+        report_text = checker.report(srt_path)
+    except Exception as e:
+        report_text = f"[!] Precheck report failed: {e}"
+
     # Safe print cho Windows console
     try:
         print(report_text)

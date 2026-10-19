@@ -26,13 +26,23 @@ logger = logging.getLogger(__name__)
 # Prompt templates
 # -----------------------------------------------------------------------------
 
-_SYSTEM_PROMPT = """\
+_BASE_SYSTEM_PROMPT = """\
 Bạn là chuyên gia dịch phụ đề phim/show từ tiếng Nhật sang tiếng Việt.
 Phong cách tự nhiên, dễ hiểu, đúng giọng nhân vật.
 
 ĐẶC THÙ TIẾNG NHẬT (BẮT BUỘC NẮM):
 - 敬語 (keigo): phân biệt rõ 敬体 (です/ます) ↔ 常体 (だ/する) ↔ 謙譲語 ↔ 尊敬語.
-  Vai lịch sự → "anh/chị/quý vị"; vai thân mật → "tớ/cậu/tao-mày". NHẤT QUÁN xuyên suốt phim.
+  Vai lịch sự → "anh/chị"; vai thân mật → "tớ/cậu/tao-mày". NHẤT QUÁN xuyên suốt phim.
+- Xưng hô PHẢI chọn ngôi cụ thể (anh, chị, em, bạn, tôi, mình...).
+  TUYỆT ĐỐI KHÔNG dùng "Anh/chị" / "anh/chị" dạng gộp — đó là lỗi.
+  + 先輩 (senpai) → "anh" (vai trên, nam)
+  + 先輩 nữ + nạn nhân nữ → "chị"
+  + 君 (kimi) → "em" (vai dưới)
+  + あなた (anata) → "anh" mặc định
+  + 不明確 (không rõ) → "anh" mặc định cho nam, "chị" cho nữ theo giọng tự xưng của nhân vật.
+  + 俺/僕 (ore/boku) → "tôi" (giọng nam)
+  + あたし/私 (atashi/watashi) → "tôi" (giọng nữ)
+  + 私 (watashi) trung tính → "tôi"
 - 終助詞 (sentence-final particles ね/よ/わ/ぞ/かな/さ): phải truyền tải cảm xúc sang tiếng Việt,
   không bỏ sót. VD: だろうね → "chắc là vậy nhỉ", よ → nhấn mạnh/khẳng định.
 - 擬態語 / 擬声語 (きらきら, わくわく, ドキドキ, ガタガタ): PHẢI dịch nghĩa sang tiếng Việt
@@ -46,6 +56,32 @@ Phong cách tự nhiên, dễ hiểu, đúng giọng nhân vật.
 - Tiếng Anh lẫn trong câu (カタカナ外来語, VD キャンセル, セットアップ): giữ nguyên nếu phổ biến ở VN
   hoặc dịch theo nghĩa khi cần tự nhiên hơn.
 """
+
+# Uncen system prompt — thêm vào base cho mode uncen
+# Bắt buộc dịch trung thực 100% từ ngữ tình dục, KHÔNG làm sạch/làm mượt
+_UNCEN_ADDON = """
+
+UNCEN MODE (BẮT BUỘC — dịch phim người lớn/JAV):
+- Dịch TRUNG THỰC 100% mọi từ ngữ tình dục, KHÔNG làm sạch, KHÔNG né tránh, KHÔNG dùng từ Hán Việt lịch sự.
+- "気持ちいい" → "Sướng quá" (KHÔNG "Dễ chịu" / "Thoải mái").
+- "いく" / "逝く" → "ra" / "sắp ra" (KHÔNG "lên đỉnh" mềm mại).
+- "セックス" → "quan hệ tình dục" (KHÔNG "gần gũi" / "yêu").
+- "中出し" → "xuất tinh trong" (KHÔNG giảm nhẹ).
+- "孕む" / "妊娠" → "mang thai" / "có thai" (KHÔNG "có em bé" né tránh).
+- "犯す" → "cưỡng ép" / "hiếp" tùy ngữ cảnh (KHÔNG che đậy).
+- "やめて" trong ngữ cảnh tình dục → "dừng lại" / "thôi" tùy giọng (KHÔNG bỏ).
+- Particles rên rỉ (あっ/んっ/はぁ/きゃっ) → giữ nguyên "anh"/"ừ"/"hừm" theo âm thanh gốc.
+- GLOSSARY (glossary tình dục) là LUẬT, KHÔNG được thay bằng từ Hán Việt lịch sự.
+- Tiếng rên/rên rỉ → giữ nguyên tiếng Việt tương đương, KHÔNG bỏ.
+- 喘ぐ/喘ぎ → "rên rỉ"/"rên" (KHÔNG "thở").
+- 射精 → "xuất tinh" (KHÔNG "phóng thích").
+- 勃起 → "cương cứng" (KHÔNG "hưng phấn").
+- ĐỪNG giảm sắc thái ngay cả khi câu nghe thô — đó là phong cách phim.
+"""
+
+# Hỗ trợ cả 2 tên gọi cũ (_SYSTEM_PROMPT) cho tương thích ngược
+# (các module khác có thể đã import _SYSTEM_PROMPT)
+_SYSTEM_PROMPT = _BASE_SYSTEM_PROMPT
 
 
 _LITERAL_TEMPLATE = """\
@@ -113,7 +149,7 @@ Nhiệm vụ: phát hiện "translation drift" — bản dịch lệch nghĩa, b
 {context_block}
 QUY TẮC:
 - Trả về JSON array, mỗi phần tử:
-  {{"index": <1-based>, "ok": true|false, "issue": "<mô tả ngắn nếu ok=false>", "suggestion": "<bản dịch đề xuất nếu ok=false>"}}
+  {{"id": <1-based>, "ok": true|false, "issue": "<mô tả ngắn nếu ok=false>", "suggestion": "<bản dịch đề xuất nếu ok=false>"}}
 - ok=true nếu bản dịch đúng nghĩa, tự nhiên, không có romaji/kana sót.
 - ok=false nếu lệch nghĩa, bỏ sót particle, còn romaji/kana onomatopoeia, hoặc quá máy móc.
 - Nếu xưng hô trong TRANSLATION không khớp với bản đồ pronouns_map ở context, đánh ok=false.
@@ -211,6 +247,17 @@ def _number_lines(lines: List[str]) -> str:
     return "\n".join(f"{i+1}. {l}" for i, l in enumerate(lines))
 
 
+def _get_system_prompt(mode: str = "default") -> str:
+    """Trả về system prompt theo mode.
+
+    - "default" / "cen" : chỉ base (cho phim thường, anime, drama)
+    - "uncen" : base + addon uncen (cho JAV, phim 18+)
+    """
+    if (mode or "").lower() == "uncen":
+        return _BASE_SYSTEM_PROMPT + _UNCEN_ADDON
+    return _BASE_SYSTEM_PROMPT
+
+
 def _format_pairs(source_lines: List[str], translations: List[str]) -> str:
     return "\n".join(
         f"ORIGINAL: {s}\nTRANSLATION: {t}"
@@ -246,12 +293,15 @@ class JaTranslator:
         Số dòng mỗi chunk trong pass literal (mặc định 8).
     """
 
-    def __init__(self, translator, chunk_size: int = 8, character_names=None):
+    def __init__(self, translator, chunk_size: int = 8, character_names=None, mode: str = "default"):
         self.translator = translator
         self.chunk_size = chunk_size
         # Inject character_names từ config (tên riêng bắt buộc dùng canonical)
         # LLM hay tự sáng tạo tên nếu không có block này (vd: 匠 -> Craft)
         self.character_names = character_names or []
+        # Mode: "default" / "cen" / "uncen" — quyết định system prompt
+        self.mode = mode or "default"
+        self.system_prompt = _get_system_prompt(self.mode)
 
     # --- Pass 1 ---
     def literal_translate(
@@ -267,7 +317,7 @@ class JaTranslator:
         for chunk in _chunked(source_lines, self.chunk_size):
             numbered = _number_lines(chunk)
             prompt = _LITERAL_TEMPLATE.format(
-                system=_SYSTEM_PROMPT,
+                system=self.system_prompt,
                 glossary_block=glossary_block,
                 character_block=character_block,
                 lines=numbered,
@@ -292,7 +342,7 @@ class JaTranslator:
         """Retry 1 dòng literal khi chunk bị thiếu."""
         glossary_block = _render_glossary(glossary_terms)
         prompt = (
-            f"{_SYSTEM_PROMPT}\n\n"
+            f"{self.system_prompt}\n\n"
             f"Dịch câu tiếng Nhật sau sang tiếng Việt.\n"
             f"Giữ keigo/particles/onomatopoeia đúng, KHÔNG trau chuốt.\n"
             f"Trả về CHỈ bản dịch, một dòng duy nhất.\n"
@@ -331,7 +381,7 @@ class JaTranslator:
         context_block = _render_context(context_summary)
         pairs_text = _format_pairs(source_lines, rough_translations)
         prompt = _POLISH_TEMPLATE.format(
-            system=_SYSTEM_PROMPT,
+            system=self.system_prompt,
             glossary_block=glossary_block,
             character_block=character_block,
             context_block=context_block,
@@ -345,6 +395,14 @@ class JaTranslator:
             return rough_translations
 
         parsed = self._safe_extract_json(raw)
+        if not isinstance(parsed, list):
+            # shortcut: retry 1 lần với temperature=0 (deterministic JSON), <5s overhead
+            logger.debug("JaTranslator.polish_translate: retry with temperature=0")
+            try:
+                raw2 = self.translator.generate(prompt, temperature=0.0)
+                parsed = self._safe_extract_json(raw2)
+            except Exception:
+                pass
         if not isinstance(parsed, list):
             logger.warning("JaTranslator.polish_translate: no JSON list, keeping rough")
             return rough_translations
@@ -400,7 +458,7 @@ class JaTranslator:
         context_block = _render_context(context_summary)
         pairs_text = _format_pairs(source_lines, translations)
         prompt = _QA_TEMPLATE.format(
-            system=_SYSTEM_PROMPT,
+            system=self.system_prompt,
             glossary_block=glossary_block,
             character_block=character_block,
             context_block=context_block,
@@ -441,14 +499,23 @@ class JaTranslator:
         translations: List[str],
         qa_results: List[dict],
     ) -> List[str]:
-        """Áp suggestion từ QA pass vào list translations (in place, return new list)."""
+        """Áp suggestion từ QA pass vào list translations (in place, return new list).
+
+        P1-2 fix: QA prompt schema now uses 'id' (consistent with polish schema) instead
+        of 'index'. Read 'id' to align with polish_translate. Fall back to 'index' for
+        backwards compatibility with older LLM outputs.
+        """
         if not qa_results:
             return translations
         out = list(translations)
         for item in qa_results:
             if item.get("ok", True):
                 continue
-            idx = item.get("index", 0) - 1
+            # P1-2: prefer 'id' (consistent with polish), fall back to 'index' for old data
+            raw_id = item.get("id")
+            if raw_id is None:
+                raw_id = item.get("index", 0)
+            idx = raw_id - 1
             sug = item.get("suggestion", "").strip()
             if 0 <= idx < len(out) and sug:
                 out[idx] = sug
