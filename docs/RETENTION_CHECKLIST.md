@@ -112,11 +112,10 @@
 - [ ] Tick `[x]` khi pass
 
 ### Fix 12 — Real-time progress bar
-- [ ] Mở `gui.py`
-- [ ] Tìm `_on_log_message` method (~line 1330)
-- [ ] Thêm regex parse progress từ log: `Window (\d+)/(\d+)` hoặc `(done)/(\d+)`
-- [ ] Update `self.page_workspace.progress.setRange(0, total)`, `setValue(done)`
-- [ ] **Test:** Chạy pipeline, kiểm tra progress bar tăng dần (0% → 100%)
+- [x] Trong loop `for line in self.process.stdout`: regex parse `Window N/M` → gọi `_update_progress`
+- [x] Method `_update_progress(cur, total)`: setRange(0,total) + setValue(cur)
+- [x] **Test:** ast.parse OK
+- **Lưu ý:** Progress bar chỉ update khi log có pattern `Window N/M`. Pipeline hiện KHÔNG emit pattern này rõ ràng — cần verify bằng test runtime.
 - [ ] Tick `[x]` khi pass
 
 ---

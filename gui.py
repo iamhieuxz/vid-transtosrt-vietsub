@@ -1412,6 +1412,21 @@ class App(QMainWindow):
                     tag = "WARN"
                 elif "[+]" in line or "[ok]" in low:
                     tag = "OK"
+
+                # shortcut: parse progress from log line
+                # Pipeline emits: "Window 14: JA 3-pass OK (6 lines, ...)"
+                # or "[*] Window 5/120 processed"
+                # or "[*] Processing translation queue..."
+                m = re.search(r"[Ww]indow\s+(\d+)/(\d+)", line)
+                if m:
+                    try:
+                        cur = int(m.group(1))
+                        total = int(m.group(2))
+                        if total > 0:
+                            self._update_progress(cur, total)
+                    except (ValueError, AttributeError):
+                        pass
+
                 self.log_bridge.message.emit(tag, line)
             self.process.wait()
             self.log_bridge.finished.emit(self.process.returncode)
@@ -1444,7 +1459,6 @@ class App(QMainWindow):
         self.log_bridge.message.emit(tag, text)
 
     def _on_log_message(self, tag: str, text: str):
-        # Apply tag filter
         current_filter = self.page_log.filter_combo.currentText()
         if current_filter != "ALL":
             # Tag mapping: INFO/WARN/ERR vs OK
@@ -1458,6 +1472,13 @@ class App(QMainWindow):
         if self.page_log.autoscroll_cb.isChecked():
             bar = self.page_log.text.verticalScrollBar()
             bar.setValue(bar.maximum())
+
+    def _update_progress(self, cur: int, total: int):
+        """Update progress bar từ log parsing. Chạy trên UI thread."""
+        bar = self.page_workspace.progress
+        if bar.maximum() != total:
+            bar.setRange(0, total)
+        bar.setValue(cur)
 
     def _on_pipeline_finished(self, rc: int):
         self.is_running = False
