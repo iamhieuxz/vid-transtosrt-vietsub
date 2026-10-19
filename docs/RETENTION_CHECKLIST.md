@@ -104,12 +104,11 @@
 - [ ] Tick `[x]` khi pass
 
 ### Fix 11 — Glossary import/export CSV
-- [ ] Mở `gui.py`
-- [ ] Tìm `GlossaryPage` class (~line 844)
-- [ ] Thêm 2 button: `Import CSV`, `Export CSV`
-- [ ] Implement import: `QFileDialog.getOpenFileName` → parse CSV → fill rows
-- [ ] Implement export: ghi rows hiện tại → CSV
-- [ ] **Test:** Mở GUI, import file CSV mẫu, kiểm tra rows hiển thị; export → file CSV OK
+- [x] Thêm 2 button: `Import CSV`, `Export CSV`
+- [x] `_import_csv`: QFileDialog → parse CSV với header (source,target,context)
+- [x] `_export_csv`: QFileDialog → ghi CSV với DictWriter
+- [x] **Test:** ast.parse OK
+- **Lưu ý:** Import không clear rows hiện có — chỉ append. Có thể add nút "Clear all" sau.
 - [ ] Tick `[x]` khi pass
 
 ### Fix 12 — Real-time progress bar

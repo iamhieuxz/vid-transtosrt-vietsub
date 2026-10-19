@@ -879,6 +879,15 @@ class GlossaryPage(QWidget):
         self.add_btn = QPushButton(f"{ICON['plus']}  Thêm")
         self.add_btn.setCursor(Qt.PointingHandCursor)
         toolbar.addWidget(self.add_btn)
+
+        # Import/Export CSV
+        self.import_btn = QPushButton(f"{ICON['open']}  Import CSV")
+        self.import_btn.setCursor(Qt.PointingHandCursor)
+        toolbar.addWidget(self.import_btn)
+        self.export_btn = QPushButton(f"{ICON['save']}  Export CSV")
+        self.export_btn.setCursor(Qt.PointingHandCursor)
+        toolbar.addWidget(self.export_btn)
+
         self.save_btn = QPushButton(f"{ICON['save']}  Lưu")
         self.save_btn.setProperty("variant", "primary")
         self.save_btn.setCursor(Qt.PointingHandCursor)
@@ -911,6 +920,55 @@ class GlossaryPage(QWidget):
         self.rows = []  # list of dicts: {frame, src, tgt, ctx}
         self.add_btn.clicked.connect(lambda: self._add_row())
         self.save_btn.clicked.connect(self._save)
+        self.import_btn.clicked.connect(self._import_csv)
+        self.export_btn.clicked.connect(self._export_csv)
+
+    def _import_csv(self):
+        """Import glossary từ file CSV (header: source,target,context)."""
+        from PySide6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(self, "Import CSV", "", "CSV (*.csv)")
+        if not path:
+            return
+        try:
+            import csv
+            with open(path, encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                rows_added = 0
+                for row in reader:
+                    src = row.get('source', '').strip()
+                    tgt = row.get('target', '').strip()
+                    ctx = row.get('context', '').strip()
+                    if src or tgt:
+                        self._add_row(src, tgt, ctx)
+                        rows_added += 1
+            if hasattr(self, 'app') and self.app:
+                self.app.set_status(f"Đã import {rows_added} dòng", "success")
+        except Exception as e:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Lỗi import", str(e))
+
+    def _export_csv(self):
+        """Export glossary hiện tại ra file CSV."""
+        from PySide6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getSaveFileName(self, "Export CSV", "glossary.csv", "CSV (*.csv)")
+        if not path:
+            return
+        try:
+            import csv
+            with open(path, 'w', encoding='utf-8', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=['source', 'target', 'context'])
+                writer.writeheader()
+                for r in self.rows:
+                    s = r["src"].text().strip()
+                    t = r["tgt"].text().strip()
+                    c = r["ctx"].text().strip()
+                    if s or t:
+                        writer.writerow({'source': s, 'target': t, 'context': c})
+            if hasattr(self, 'app') and self.app:
+                self.app.set_status(f"Đã export glossary → {path}", "success")
+        except Exception as e:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Lỗi export", str(e))
 
     def _add_row(self, src="", tgt="", ctx=""):
         # Insert before the stretch
