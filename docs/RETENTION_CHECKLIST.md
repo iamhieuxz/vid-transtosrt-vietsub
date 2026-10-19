@@ -38,11 +38,10 @@
 5. JA polish prompt LLM hay trả lời giải thích thay vì JSON array
 
 ### Fix 4 — Sửa `_detect_repetition` threshold
-- [ ] Mở `core/validator.py`
-- [ ] Tìm method `_detect_repetition` (~line 162)
-- [ ] Đổi `def _detect_repetition(self, translations, threshold: float = 0.7)` → `threshold: float = 0.5`
-- [ ] **Test:** Chạy `python -m tests.test_precheck_names` hoặc unit test hiện có
-- [ ] Tick `[x]` khi pass
+- [x] Mở `core/validator.py`
+- [x] Đổi `threshold: float = 0.7` → `threshold: float = 0.5` (~line 165)
+- [x] **Test:** 6 dòng identical → True (pass); 4 dòng lặp 50% → False (vẫn cần ≥3 cặp)
+- **Hạn chế:** Logic vẫn yêu cầu `repeat_count >= 3` cặp → trong window 6 dòng max 3 cặp. Fix này chỉ giảm threshold, không giải quyết "anh ơi/em ơi" type repetition. Cần fix sâu hơn sau.
 
 ### Fix 5 — Tăng `num_ctx` cho default/uncen model
 - [ ] Mở `config.yaml`
