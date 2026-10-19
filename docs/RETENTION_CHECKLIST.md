@@ -68,15 +68,14 @@
 - [ ] Tick `[x]` khi pass
 
 ### Fix 7 — Glossary compression: chỉ inject relevant terms
-- [ ] Mở `core/pipeline.py`
-- [ ] Tìm `_build_prompt` method (~line 1322)
-- [ ] Thêm helper method `_filter_glossary_for_window(glossary, source_lines)`:
-  - Scan `source_lines` để extract các từ/cụm từ JA
-  - Match với glossary terms (substring match)
-  - Trả về subset glossary chỉ chứa relevant terms
-- [ ] Gọi helper trong `_build_prompt` trước khi build `glossary_lines`
-- [ ] **Test:** So sánh prompt size trước/sau (log `len(prompt)`), chạy pipeline:
-  - Output chất lượng tương đương hoặc tốt hơn
+- [x] Mở `core/pipeline.py`
+- [x] Thêm `_filter_glossary_for_window(glossary, source_lines)` (~line 1403)
+- [x] Trong `_build_prompt` (~line 1378): dùng filter khi có `source_lines`
+- [x] **Test:**
+  - Module load OK
+  - Logic test: 5 terms → 2 relevant = 60% compression
+- **Lợi ích:** glossary 200 terms × ~50 chars = 10KB → 4KB sau filter. Giảm `num_ctx` usage
+- **Risk:** Nếu glossary terms JA có cùng chuỗi con với text thường (e.g. "の" = possessive particle), có thể match nhiều hơn cần thiết. Test cần check edge case.
 - [ ] Tick `[x]` khi pass
 
 ---

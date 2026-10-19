@@ -1358,8 +1358,24 @@ class TranslationPipeline:
         if glossary is None:
             glossary = self._get_glossary(project['id']) if self.enable_glossary else []
 
+        # shortcut: chỉ inject glossary terms LIÊN QUAN tới window hiện tại
+        # Source lines có trong `task['_source_lines']` (đã parse ở _translate_window).
+        # Match bằng substring: term JA có mặt trong bất kỳ source line → relevant
+        # Giảm prompt size khi glossary có 100+ terms (mỗi term ~50 chars → 5KB/term).
+        source_lines = task.get('_source_lines') or []
         glossary_block = ""
-        if glossary:
+        if glossary and source_lines:
+            relevant = self._filter_glossary_for_window(glossary, source_lines)
+            if relevant:
+                glossary_lines = []
+                for t in relevant:
+                    term_line = f"- {t['source_term']} -> {t['target_term']}"
+                    if t.get('context_hint'):
+                        term_line += f" (context: {t['context_hint']})"
+                    glossary_lines.append(term_line)
+                glossary_block = p['glossary_hdr'] + "\n" + "\n".join(glossary_lines) + "\n"
+        elif glossary:
+            # fallback: không có source_lines → dùng tất cả (giữ behavior cũ)
             glossary_lines = []
             for t in glossary:
                 term_line = f"- {t['source_term']} -> {t['target_term']}"
@@ -1399,6 +1415,26 @@ class TranslationPipeline:
 {p['rules'].format(n=num_lines)}
 
 ### {p['output']}"""
+
+    def _filter_glossary_for_window(self, glossary, source_lines):
+        """Lọc glossary chỉ giữ terms xuất hiện trong source_lines của window.
+
+        Returns list of term dicts giữ nguyên shape để truyền vào prompt.
+        Empty list nếu không match term nào (caller sẽ không tạo glossary_block).
+        """
+        if not glossary or not source_lines:
+            return glossary or []
+
+        # Gộp source_lines thành 1 string để substring match nhanh
+        joined = '\n'.join(source_lines)
+
+        relevant = []
+        for term in glossary:
+            src_term = term.get('source_term', '').strip()
+            if src_term and src_term in joined:
+                relevant.append(term)
+
+        return relevant
 
     def _build_character_names_block(self) -> str:
         """Build block 'TEN RIENG' từ config.character_names để inject vào prompt.
