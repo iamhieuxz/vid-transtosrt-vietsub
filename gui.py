@@ -985,6 +985,19 @@ class LogPage(QWidget):
         title.setObjectName("sectionTitle")
         toolbar.addWidget(title)
         toolbar.addStretch()
+
+        # Tag filter
+        self.filter_combo = QComboBox()
+        self.filter_combo.addItems(["ALL", "INFO", "OK", "WARN", "ERR"])
+        self.filter_combo.setMinimumWidth(80)
+        toolbar.addWidget(QLabel("Filter:"))
+        toolbar.addWidget(self.filter_combo)
+
+        # Auto-scroll toggle
+        self.autoscroll_cb = QCheckBox("Auto-scroll")
+        self.autoscroll_cb.setChecked(True)
+        toolbar.addWidget(self.autoscroll_cb)
+
         self.clear_btn = QPushButton(f"{ICON['trash']}  Xoá log")
         self.clear_btn.setCursor(Qt.PointingHandCursor)
         toolbar.addWidget(self.clear_btn)
@@ -1373,7 +1386,20 @@ class App(QMainWindow):
         self.log_bridge.message.emit(tag, text)
 
     def _on_log_message(self, tag: str, text: str):
+        # Apply tag filter
+        current_filter = self.page_log.filter_combo.currentText()
+        if current_filter != "ALL":
+            # Tag mapping: INFO/WARN/ERR vs OK
+            tag_normalized = tag.upper()
+            if tag == "[OK]" or tag == "OK":
+                tag_normalized = "OK"
+            if tag_normalized != current_filter:
+                return
         self.page_log.text.appendPlainText(_clean_log_text(text))
+        # Auto-scroll to bottom
+        if self.page_log.autoscroll_cb.isChecked():
+            bar = self.page_log.text.verticalScrollBar()
+            bar.setValue(bar.maximum())
 
     def _on_pipeline_finished(self, rc: int):
         self.is_running = False

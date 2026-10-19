@@ -97,14 +97,10 @@
 - [ ] Tick `[x]` khi pass
 
 ### Fix 10 — Log page auto-scroll + tag filter
-- [ ] Mở `gui.py`
-- [ ] Tìm `LogPage` class (~line 952)
-- [ ] Thêm `QComboBox` filter: `[ALL, INFO, OK, WARN, ERR]`
-- [ ] Thêm `QCheckBox` auto-scroll (default checked)
-- [ ] Trong `_on_log_message`, apply filter + scroll
-- [ ] **Test:** Mở GUI, chạy pipeline, kiểm tra:
-  - Filter hoạt động (chỉ hiển thị tag đã chọn)
-  - Auto-scroll chạm đáy khi log mới
+- [x] Thêm `QComboBox filter_combo` (ALL/INFO/OK/WARN/ERR)
+- [x] Thêm `QCheckBox autoscroll_cb` (default checked)
+- [x] `_on_log_message`: apply filter + auto-scroll to max
+- **Caveat:** Tag logic hiện chỉ filter đúng tag khi `LogBridge.message` emit (tag, text). Nếu tag rỗng → luôn pass qua. Cần test trong runtime.
 - [ ] Tick `[x]` khi pass
 
 ### Fix 11 — Glossary import/export CSV
