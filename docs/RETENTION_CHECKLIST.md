@@ -204,3 +204,12 @@
 **B∆∞·ªõc 2:** L√†m theo th·ª© t·ª± P0 ‚Üí P1 ‚Üí P2
 **B∆∞·ªõc 3:** Sau m·ªói fix ‚Üí test ‚Üí tick ‚Üí ghi notes
 **B∆∞·ªõc 4:** Commit th∆∞·ªùng xuy√™n (1-2 fix = 1 commit)
+ # # #   F i x   1 8   ( B O N U S )      M u l t i - l i n e   S R T   c u e   p a r s e 
+ 
+ * * P h · t   h i «n : * *   J U L - 1 4 5   c Û   c u e s   m u l t i - l i n e   ( c u e   2 1 3 :   ' åN∫NM0ä0`0W0\ \ n B0B0' ) .   K h i   b u i l d   ' [ N ]   t e x t '   í!  n e w l i n e   t r o n g   t e x t   p h ·   p a r s e r   í!  ' m a l f o r m e d   l i n e '   í!  5   r e t r y   í!  s k i p . 
+ 
+ * * F i x : * *   T r o n g   3   c h ◊  b u i l d   p r o m p t   ( l i n e   ~ 6 7 8   c h u n k ,   1 2 4 7   f u t u r e ,   1 5 3 5   f u t _ s r c ) ,   r e p l a c e   \ \ n \ \ r   t r o n g   o r i g i n a l _ t e x t   b ±n g   s p a c e . 
+ 
+ * * T e s t : * *   J U L - 1 4 5   p i p e l i n e   r e - r u n   í!  2 4 8 / 2 6 6   í!  2 6 6 / 2 6 6   ( 1 0 0 %   t r a n s l a t e d ) .   0   [ U N T R A N S L A T E D ] . 
+  
+ 

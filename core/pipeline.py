@@ -675,7 +675,9 @@ class TranslationPipeline:
             end_sub = chunk[-1]['sub_index']
             start_pos = i
             end_pos = i + len(chunk) - 1
-            lines = [f"[{it['sub_index']}] {it['original_text']}" for it in chunk]
+            # shortcut: replace newlines trong original_text bằng space
+            # để format [N] text luôn là 1 dòng, parser không bị "malformed line"
+            lines = [f"[{it['sub_index']}] {(it.get('original_text') or '').replace(chr(10), ' ').replace(chr(13), ' ')}" for it in chunk]
             self.db.save_window(project_id, i//win_size, start_sub, end_sub, start_pos, end_pos, "\n".join(lines))
 
     def _process_sequential(self, project_id, project):
@@ -1244,7 +1246,7 @@ class TranslationPipeline:
 
         fut_end = min(len(items), end_pos + fut_size + 1)
         fut_items = items[end_pos+1:fut_end]
-        future = "\n".join([f"[{it['sub_index']}] {it['original_text']}" for it in fut_items]) if fut_items else ""
+        future = "\n".join([f"[{it['sub_index']}] {(it.get('original_text') or '').replace(chr(10), ' ').replace(chr(13), ' ')}" for it in fut_items]) if fut_items else ""
 
         # 2-tier: Inject context từ Worker A (JaContextAnalyzer)
         ctx_block = self._get_context_block(project_id, start_pos, end_pos)
@@ -1532,7 +1534,7 @@ class TranslationPipeline:
                 )
                 fut_items = all_items[end_pos + 1:end_pos + 6]
                 fut_src = "\n".join(
-                    f"[{it['sub_index']}] {it['original_text']}"
+                    f"[{it['sub_index']}] {(it.get('original_text') or '').replace(chr(10), ' ').replace(chr(13), ' ')}"
                     for it in fut_items
                 )
 
