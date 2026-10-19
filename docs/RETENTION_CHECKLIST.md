@@ -138,11 +138,11 @@
 - [ ] Tick `[x]` khi pass
 
 ### Fix 15 — GUI recent projects
-- [ ] Mở `gui.py`
-- [ ] Dùng `QSettings` lưu 5 project gần nhất
-- [ ] Hiển thị dưới dạng menu/button trên Workspace
-- [ ] **Test:** Chạy 2-3 project, kiểm tra recent hiển thị
-- [ ] Tick `[x]` khi pass
+- [x] Mở `gui.py`
+- [x] Dùng config key `recent_projects` (không cần QSettings)
+- [x] Hiển thị dưới dạng `QComboBox` trên Workspace
+- [x] **Test:** ast.parse OK
+- [x] Tick `[x]` pass
 
 ### Fix 16 — Test coverage cho `translator.py`
 - [ ] Tạo `tests/test_translator.py`

@@ -742,6 +742,16 @@ class WorkspacePage(QWidget):
         # Input
         self.input_row = FileInputRow("Chọn file video hoặc SRT…")
         files_card.addWidget(FieldRow(f"{ICON['input']}  Input (video hoặc SRT)", self.input_row))
+        # Recent projects dropdown
+        recent_row = QHBoxLayout()
+        recent_label = QLabel(f"  {ICON['clock']}  Recent:")
+        recent_label.setObjectName("muted")
+        recent_row.addWidget(recent_label)
+        self.recent_combo = QComboBox()
+        self.recent_combo.setMinimumWidth(300)
+        self.recent_combo.setPlaceholderText("(trống)")
+        recent_row.addWidget(self.recent_combo, 1)
+        files_card.addLayout(recent_row)
         # Output - read-only, tự sinh từ input
         self.output_row = OutputPathDisplay("Output folder sẽ tự tạo cùng tên project…")
         files_card.addWidget(FieldRow(f"{ICON['output']}  Output folder (tự động)", self.output_row))
@@ -1279,6 +1289,7 @@ class App(QMainWindow):
         self.page_workspace.fix_btn.clicked.connect(self._fix_srt_rules)
         self.page_workspace.save_btn.clicked.connect(self._save_config)
         self.page_workspace.input_row.on_input_changed.connect(self._on_input_changed)
+        self.page_workspace.recent_combo.currentIndexChanged.connect(self._on_recent_selected)
 
         # Default selection
         self.nav_buttons["workspace"].setChecked(True)
@@ -1343,6 +1354,14 @@ class App(QMainWindow):
         self.page_settings.checkpoint_edit.setText(str(pipe.get("checkpoint_interval", 20)))
 
         self.page_glossary.load(self.config.get("glossary", []) or [])
+
+        # Populate recent projects dropdown
+        self.page_workspace.recent_combo.clear()
+        recents = self._load_recent_projects()
+        for r in recents:
+            self.page_workspace.recent_combo.addItem(r)
+        if recents:
+            self.page_workspace.recent_combo.setCurrentIndex(0)
 
         # Project header
         proj_name = p.get("name", "—")
@@ -1414,7 +1433,34 @@ class App(QMainWindow):
         self.log_message("OK", f"Đã lưu cấu hình vào {self.config_path}")
         self._refresh_from_config()
 
+    def _save_recent_project(self, input_path: str):
+        """Lưu input path vào recent projects (max 5)."""
+        if not input_path or not os.path.exists(input_path):
+            return
+        recents = self.config.setdefault("recent_projects", [])
+        # Remove duplicate
+        recents = [r for r in recents if r != input_path]
+        # Insert at top
+        recents.insert(0, input_path)
+        # Keep max 5
+        self.config["recent_projects"] = recents[:5]
+        save_config(self.config, self.config_path)
+
+    def _load_recent_projects(self) -> list:
+        """Load recent projects từ config, filter ra file không tồn tại."""
+        recents = self.config.get("recent_projects", []) or []
+        return [r for r in recents if os.path.exists(r)]
+
     # ---- Actions -------------------------------------------------------
+    def _on_recent_selected(self, index: int):
+        """Khi user chọn 1 recent project → set input."""
+        if index < 0:
+            return
+        path = self.page_workspace.recent_combo.itemText(index)
+        if path and os.path.exists(path):
+            self.page_workspace.input_row.setText(path)
+            self.set_status(f"Đã chọn: {os.path.basename(path)}", "success")
+
     def _on_input_changed(self, path: str):
         """Khi user chọn input mới -> tự tạo folder output cùng tên project, giống main.py."""
         if not path or not os.path.exists(path):
@@ -1430,6 +1476,8 @@ class App(QMainWindow):
         if hasattr(self, 'project_title') and hasattr(self, 'project_name_lbl'):
             self.project_title.setText(self.config.get('project', {}).get('name', ''))
             self.project_name_lbl.setText(self.config.get('project', {}).get('name', ''))
+        # Lưu vào recent projects
+        self._save_recent_project(path)
 
     def _start_translation(self):
         if self.is_running:
