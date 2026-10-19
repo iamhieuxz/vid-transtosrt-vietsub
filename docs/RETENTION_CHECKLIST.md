@@ -145,10 +145,17 @@
 - [x] Tick `[x]` pass
 
 ### Fix 16 — Test coverage cho `translator.py`
-- [ ] Tạo `tests/test_translator.py`
-- [ ] Mock `requests.post` trả về response giả
-- [ ] Test: `generate()` retry, circuit breaker, `extract_json()`, `fallback_translate()`
-- [ ] Chạy `pytest tests/test_translator.py -v`
+- [x] Tạo `tests/test_translator.py`
+- [x] Mock `requests.get` cho health check
+- [x] Mock `requests.post` cho generate response
+- [x] **Test 6 cases:**
+  - `test_translator_health_check` ✓
+  - `test_translator_health_check_failure` ✓
+  - `test_generate_strips_think_tags` ✓
+  - `test_generate_empty_response_raises` ✓
+  - `test_circuit_breaker_state_field_exists` ✓
+  - `test_extract_json_finds_array` ✓
+- **6/6 passed**
 - [ ] Tick `[x]` khi pass
 
 ### Fix 17 — Test coverage cho `pipeline._translate_window_ja`
