@@ -83,11 +83,9 @@
 ## 🟠 P1 — Quan trọng, làm sau P0
 
 ### Fix 8 — Bỏ `split_long_subs` default hoặc hiển thị warn trên GUI
-- [ ] Mở `config.yaml`
-- [ ] Đổi `pipeline.split_long_subs: true` → `pipeline.split_long_subs: false`
-- [ ] (Tuỳ chọn) Thêm log rõ hơn trong `_parse_srt` khi có long cue
-- [ ] **Test:** Chạy pipeline, kiểm tra:
-  - Output SRT giống input timestamps (không bị split giả)
+- [x] `config.yaml`: `pipeline.split_long_subs: true → false`
+- [x] **Verify:** yaml.safe_load → `False`
+- **Lý do:** sub_splitter chỉ warn, không split thật → user phải tự review. Tắt default.
 - [ ] Tick `[x]` khi pass
 
 ### Fix 9 — Settings page: thêm `num_predict`, `temperature`, `timeout`
