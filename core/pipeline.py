@@ -271,12 +271,17 @@ class TranslationPipeline:
         if self._is_japanese_source:
             try:
                 from .ja_translator import JaTranslator
+                # Đọc mode từ config.translation.mode ("uncen" / "default" / "cen")
+                # để chọn system prompt phù hợp (xem ja_translator._get_system_prompt)
+                _trans_cfg = config.get('translation', {}) or {}
+                _ja_mode = _trans_cfg.get('mode', 'uncen') or 'uncen'
                 self.ja_translator = JaTranslator(
                     self.translator,
                     chunk_size=8,
                     character_names=config.get('character_names', []),
+                    mode=_ja_mode,
                 )
-                logger.info("JaTranslator (3-pass, with character_names) enabled")
+                logger.info(f"JaTranslator (3-pass, with character_names, mode={_ja_mode}) enabled")
             except Exception as e:
                 logger.warning(f"Failed to init JaTranslator: {e}")
                 self.ja_translator = None
@@ -382,9 +387,12 @@ class TranslationPipeline:
 
         # Worker C: scene review chỉ chạy khi JA pipeline đầy đủ (3-pass + context)
         # Auto-fix suggestion có validate trước khi ghi DB.
+        # Default TẮT (config.ja_context.worker_c_enabled=false) vì model 8B
+        # có thể tự sửa làm hỏng bản dịch tốt. Opt-in khi user cần polish.
         if (self._is_japanese_source
                 and self.ja_translator is not None
-                and self.ja_context_analyzer is not None):
+                and self.ja_context_analyzer is not None
+                and self.config.get('ja_context', {}).get('worker_c_enabled', False)):
             try:
                 self._worker_c_scene_review(project_id, project)
                 # Sau Worker C update DB, export lại lần cuối
@@ -398,6 +406,8 @@ class TranslationPipeline:
             try:
                 from .post_processor import RuleBasedPostProcessor
                 processor = RuleBasedPostProcessor()
+                # Inject character_names để fix mistaken aliases (vd: Kasumi -> Kana)
+                processor.set_character_names(self.config.get('character_names', []))
                 post_stats = processor.process_project(
                     self.db, project_id,
                     progress_callback=lambda done, total: None,
@@ -543,7 +553,21 @@ class TranslationPipeline:
             raise FileNotFoundError(f"{STATUS_ICONS['error']} SRT file not found: {input_path}")
         subs = pysrt.open(input_path, encoding='utf-8')
         if not subs:
-            raise ValueError(f"{STATUS_ICONS['error']} SRT file is empty: {input_path}")
+            # shortcut: phân biệt file 0 byte (Whisper fail/im lặng) vs file có header rỗng
+            # để gợi ý nguyên nhân đúng thay vì chỉ báo "empty"
+            size = os.path.getsize(input_path) if os.path.exists(input_path) else 0
+            if size == 0:
+                raise ValueError(
+                    f"{STATUS_ICONS['error']} SRT file is empty (0 bytes): {input_path}\n"
+                    f"  → Nguyên nhân thường gặp:\n"
+                    f"    1. Whisper transcribe thất bại im lặng (model chưa tải, OOM, hoặc video không có audio track)\n"
+                    f"    2. Video file hỏng/không đọc được audio stream\n"
+                    f"  → Thử: ffprobe \"<video>\" để kiểm tra có audio track không"
+                )
+            raise ValueError(
+                f"{STATUS_ICONS['error']} SRT file has no subtitle entries ({size} bytes): {input_path}\n"
+                f"  → Whisper đã chạy nhưng không nhận diện được lời nói (có thể video im lặng / nhạc nền thuần)"
+            )
         # Giữ newline giữa các dòng trong cùng 1 sub (Aegisub/VLC hiển thị đúng),
         # chỉ collapse space thừa trong từng dòng (không gộp các sub khác nhau).
         items = [{'index': s.index, 'start': str(s.start), 'end': str(s.end),
@@ -552,9 +576,75 @@ class TranslationPipeline:
         if not items:
             raise ValueError(f"{STATUS_ICONS['error']} No subtitle items found in: {input_path}")
 
-        # Sub duration splitter: chia sub dài thành nhiều sub ngắn theo dấu câu
-        # (vd: sub 9 phút Whisper output → split thành nhiều sub theo 。/！/?)
-        # Không gom sub — chỉ tách sub dài ra nhiều sub ngắn.
+        # Whisper artifact normalizer: thay romaji/kana đơn lẻ (うん, ありがとう, 塩)
+        # bằng tiếng Việt TRƯỚC khi dịch → giảm lỗi "chưa dịch" ở output.
+        # Chỉ áp dụng khi source là JA (Whisper artifact là vấn đề riêng của JA).
+        if self._is_japanese_source:
+            try:
+                from .whisper_normalizer import normalize_items
+                items = normalize_items(items)
+            except Exception as e:
+                logger.warning(f"WhisperNormalizer failed (non-blocking): {e}")
+
+        # Sub merger: gộp sub rỗng/dài bất thường (vd: 70s sub 塩? lặp 3 lần ở JUR-859)
+        # trước khi splitter chia sub — tránh sub "chờ" kéo dài 30s+
+        if self._is_japanese_source:
+            try:
+                from .sub_merger import merge_srt_items
+                pre_merge_count = len(items)
+                items = merge_srt_items(items)
+                if len(items) != pre_merge_count:
+                    console.print(
+                        f"{STATUS_ICONS['success']} [green]Merged "
+                        f"{pre_merge_count} → {len(items)} subs (removed {pre_merge_count - len(items)} empty/long)[/green]"
+                    )
+            except Exception as e:
+                logger.warning(f"SubMerger failed (non-blocking): {e}")
+
+        # Long cues cannot be split accurately without speech alignment. Keep
+        # source timestamps and flag suspicious durations for targeted review.
+        if self._is_japanese_source:
+            try:
+                from .sub_splitter import find_long_subs, validate_subtitle_timings
+                review_threshold = self.config.get('pipeline', {}).get(
+                    'timestamp_review_threshold_ms', 15000,
+                )
+                long_subs = find_long_subs(items, review_threshold)
+                for item in long_subs:
+                    logger.warning(
+                        "Timestamp review: cue %s lasts %.1fs (%s --> %s): %s",
+                        item.get('index'), item['duration_ms'] / 1000,
+                        item['start'], item['end'], (item.get('text') or '')[:100],
+                    )
+                if long_subs:
+                    report_path = f"{input_path}.timestamp_review.txt"
+                    with open(report_path, 'w', encoding='utf-8') as report:
+                        for item in long_subs:
+                            report.write(
+                                f"Cue {item.get('index')}: {item['start']} --> {item['end']} "
+                                f"({item['duration_ms'] / 1000:.1f}s)\n"
+                                f"{item.get('text', '').strip()}\n\n"
+                            )
+                    logger.info("Timestamp review report written: %s", report_path)
+                timing_issues = validate_subtitle_timings(items)
+                for issue in timing_issues:
+                    logger.warning("Timestamp validation issue: %s", issue)
+                if timing_issues:
+                    console.print(
+                        f"{STATUS_ICONS['warning']} [yellow]Found {len(timing_issues)} "
+                        "invalid/overlapping timestamp issues; see log for details[/yellow]"
+                    )
+                if long_subs:
+                    console.print(
+                        f"{STATUS_ICONS['warning']} [yellow]Found {len(long_subs)} "
+                        f"subtitle cues over {review_threshold / 1000:.0f}s; "
+                        "preserving timestamps and logging for review[/yellow]"
+                    )
+            except Exception as e:
+                logger.warning(f"Long timestamp cue check failed (non-blocking): {e}")
+
+        # Compatibility normalization only: punctuation cannot reveal exact
+        # speech timestamps, so the splitter preserves original cue timings.
         split_enabled = self.config.get('pipeline', {}).get('split_long_subs', True)
         if split_enabled:
             from .sub_splitter import split_srt_items
@@ -737,7 +827,17 @@ class TranslationPipeline:
 
         # Lock context reads and DB writes to prevent race conditions in parallel mode
         with self._context_lock:
-            context = self._get_context(project_id, task['start_pos'], task['end_pos'], project, use_translated=use_translated_history)
+            # shortcut: load items once per task (was N+1: each window re-queried full table)
+            # Fix P1-4: get_all_items is expensive for long projects; reuse within a task.
+            try:
+                _all_items_cache = self.db.get_all_items(project_id)
+            except Exception as e:
+                logger.warning(f"get_all_items failed: {e}, falling back to per-call query")
+                _all_items_cache = None
+            context = self._get_context(
+                project_id, task['start_pos'], task['end_pos'], project,
+                use_translated=use_translated_history, _items=_all_items_cache,
+            )
             
             # Retry loop: cho đến khi có kết quả hợp lệ hoặc hết retries
             max_window_retries = 5
@@ -867,6 +967,11 @@ class TranslationPipeline:
             logger.error(f"Window {task['window_index']}: no valid lines after parse")
             return None
 
+        # shortcut: store parsed lines back to task so _build_prompt can use them
+        # instead of re-parsing (also fixes P0-1: count real subtitle count, not raw lines)
+        task['_sub_indices'] = sub_indices
+        task['_source_lines'] = source_lines
+
         tm_hits = []
         all_in_tm = True
         for src in source_lines:
@@ -993,7 +1098,15 @@ class TranslationPipeline:
         import json
 
         # Literal mode flag: skip polish + qa, chỉ giữ literal
-        literal_mode = self.config.get('translation', {}).get('literal_mode', False)
+        # Mặc định: True cho uncen, False cho mode khác
+        # (config.translation.literal_mode override nếu user set)
+        _trans_mode = (self.config.get('translation', {}) or {}).get('mode', 'uncen')
+        literal_mode_cfg = self.config.get('translation', {}).get('literal_mode', None)
+        if literal_mode_cfg is None:
+            # Auto: uncen → True (giữ nghĩa gốc, không polish làm mượt)
+            literal_mode = (_trans_mode or '').lower() == 'uncen'
+        else:
+            literal_mode = bool(literal_mode_cfg)
 
         # Lấy context cho window hiện tại (2-tier)
         context_summary = self._get_ja_context_for_window(task, project_id)
@@ -1095,8 +1208,9 @@ class TranslationPipeline:
             logger.debug(f"_get_ja_context_for_window: {e}")
             return None
 
-    def _get_context(self, project_id, start_pos, end_pos, project, use_translated=False):
-        items = self.db.get_all_items(project_id)
+    def _get_context(self, project_id, start_pos, end_pos, project, use_translated=False, _items=None):
+        # shortcut: accept pre-loaded items to avoid N+1 full-table queries (P1-4)
+        items = _items if _items is not None else self.db.get_all_items(project_id)
         hist_size = project['history_size']
         fut_size = project['future_size']
         hist_start = max(0, start_pos - hist_size)
@@ -1239,7 +1353,13 @@ class TranslationPipeline:
         # các từ vựng chung.
         character_block = self._build_character_names_block()
 
-        num_lines = len([l for l in task['original_text'].split('\n') if l.strip()])
+        # shortcut: count parsed subtitle lines, not raw lines (fix P0-1)
+        # raw 'original_text' may have multi-line text or empty lines; only sub_indices
+        # accurately represent the number of translations the LLM must produce.
+        if task.get('_sub_indices'):
+            num_lines = len(task['_sub_indices'])
+        else:
+            num_lines = len([l for l in task['original_text'].split('\n') if l.strip()])
 
         # 2-tier: Inject context block tu Worker A (neu co)
         context_block = context.get('context_block', '') or ''
@@ -1386,8 +1506,19 @@ class TranslationPipeline:
                         source_lines, rough, glossary_terms=glossary,
                         context_summary=ctx_summary,
                     )
-                    if len(polished) != len(source_lines):
-                        polished = (polished + source_lines)[:len(source_lines)]
+                    # P1-7 fix: fail-fast on length mismatch (was padding with JA source,
+                    # which mixed Japanese into Vietnamese subtitles). Same fail-fast
+                    # principle as literal_translate on line 1500.
+                    if polished is None or len(polished) != len(source_lines):
+                        logger.warning(
+                            f"Recovery[{dw['window_index']}]: JA polish invalid "
+                            f"({None if polished is None else len(polished)} vs "
+                            f"{len(source_lines)}), falling back to rough"
+                        )
+                        polished = rough if (rough and len(rough) == len(source_lines)) else None
+                        if polished is None:
+                            logger.error(f"Recovery[{dw['window_index']}]: no valid translation, skipping")
+                            continue
                     try:
                         qa = self.ja_translator.qa_review(
                             source_lines, polished, glossary_terms=glossary,
@@ -1406,6 +1537,7 @@ class TranslationPipeline:
                     polished = self.translator.polish_translate(
                         source_lines, raw_trans, src_lang, tgt_lang,
                         context_before=hist_trans, context_after=fut_src,
+                        glossary_terms=glossary,
                     )
                     if polished is None:
                         polished = raw_trans  # fallback giữ nguyên rough

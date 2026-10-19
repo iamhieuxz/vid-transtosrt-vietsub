@@ -8,11 +8,11 @@ whisper:
   min_silence_duration_ms: 700
   speech_pad_ms: 300
 project:
-  name: JUR-859
-  source_lang: Japanese
-  target_lang: Vietnamese
-  input_srt: E:/HIDE/JAV/JUR-859.mp4
-  output_srt: E:\HIDE\JAV
+  name: JUL-409
+  source_lang: Tiếng Nhật (Japanese)
+  target_lang: Tiếng Việt (Vietnamese)
+  input_srt: test_jul145_short.srt
+  output_srt: .
 window:
   size: 6
   history: 12
@@ -42,7 +42,7 @@ models:
     ollama_url: http://localhost:11434/api/generate
     temperature: 0.1
     repeat_penalty: 1.2
-    num_ctx: 8192
+    num_ctx: 16384
     num_predict: 2048
     timeout: 180
 pipeline:
@@ -59,15 +59,16 @@ pipeline:
 model:
   name: huihui_ai/qwen3-abliterated:8b-v2
   ollama_url: http://localhost:11434/api/generate
-  temperature: 0.1
-  repeat_penalty: 1.2
-  num_ctx: 8192
-  num_predict: 1024
-  timeout: 180
+  temperature: 0.05
+  repeat_penalty: 1.3
+  num_ctx: 6144
+  num_predict: 2048
+  timeout: 300
 ja_context:
-  enabled: true
+  enabled: false
   window_size: 18
   scene_review_size: 36
+  worker_c_enabled: false
 ja_trans2:
   enabled: false
   batch_size: 5
@@ -1320,6 +1321,9 @@ character_names:
   canonical: Takumi
   context: tên riêng nam - Whisper hay nghe nhầm thành "Craft" trong JAV context;
     PHẢI giữ "Takumi" toàn phim
+  mistaken_aliases:
+  - Craft
+  - Takumì
 - aliases:
   - 川口くん
   - 川口さん
@@ -1328,7 +1332,9 @@ character_names:
   - Kawaguchi
   canonical: Kawaguchi
   context: nam chính, ngành cho vay; Whisper hay nhầm thành "Takao" trong cùng phim
-  # Tên khác trong cùng phim có thể refer đến Kawaguchi (alias ngang hàng)
+  mistaken_aliases:
+  - Akasaka
+  - Kishida
   also_known_as:
   - Takao
   - たけお
@@ -1337,8 +1343,8 @@ character_names:
   - Aya-san
   - アヤ
   canonical: Aya
-  context: Whisper thường nghe nhầm あゆみ thành Aya; dùng để registry bắt lỗi,
-    KHÔNG dùng làm canonical thật
+  context: Whisper thường nghe nhầm あゆみ thành Aya; dùng để registry bắt lỗi, KHÔNG
+    dùng làm canonical thật
 anti_artifacts:
 - pattern: \bvâng\b
   replacement: hai
