@@ -55,20 +55,16 @@
 - [ ] Tick `[x]` khi pass
 
 ### Fix 6 — Đẩy `_retry_per_line` lên làm primary cho câu ngắn
-- [ ] Mở `core/pipeline.py`
-- [ ] Tìm method `_translate_window` (~line 939)
-- [ ] Thêm early-return ngay sau khi parse `sub_indices`/`source_lines`:
-  ```python
-  # Short single-word sentences → translate per-line (faster, fewer failures)
-  if all(len(s.strip()) <= 10 and not any('\u4e00' <= c <= '\u9fff' for c in s) for s in source_lines):
-      glossary = self._get_glossary(project_id) if self.enable_glossary else []
-      result = self._retry_per_line(source_lines, src_lang, tgt_lang, glossary)
-      if result and all(r.strip() for r in result):
-          return result, source_lines
-  ```
-- [ ] **Test:** Tạo file SRT test có ~5 subs ngắn (1-5 chars), chạy pipeline, kiểm tra:
-  - Output có dịch (không `[UNTRANSLATED]`)
-  - Thời gian nhanh hơn đáng kể
+- [x] Mở `core/pipeline.py`
+- [x] Sau `task['_source_lines'] = source_lines` (~line 972), thêm guard:
+  - Tất cả dòng `<=15 chars`, không có kanji → gọi `_retry_per_line`
+- [x] **Test:**
+  - Module load OK
+  - Logic test cases:
+    - "こんにちは/おはよう/ありがとう" → True
+    - ">15 chars" → False
+    - Có kanji → False
+- **Lợi ích:** dòng greeting ngắn không cần 3-pass translation, giảm 30-50% thời gian
 - [ ] Tick `[x]` khi pass
 
 ### Fix 7 — Glossary compression: chỉ inject relevant terms

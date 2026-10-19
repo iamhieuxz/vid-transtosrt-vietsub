@@ -972,6 +972,27 @@ class TranslationPipeline:
         task['_sub_indices'] = sub_indices
         task['_source_lines'] = source_lines
 
+        # shortcut: dòng ngắn (<=15 chars, không có kanji) → dịch per-line thẳng
+        # Giảm tải LLM và [UNTRANSLATED] cho greeting/filler/short kana utterances
+        def _is_short_simple_line(s):
+            s = s.strip()
+            if len(s) > 15:
+                return False
+            # Có kanji (CJK) → không đơn giản
+            if any('\u4e00' <= c <= '\u9fff' for c in s):
+                return False
+            # Whisper noise đã filter
+            return True
+
+        if all(_is_short_simple_line(s) for s in source_lines if s):
+            src_lang = self._source_lang if hasattr(self, '_source_lang') else 'ja'
+            tgt_lang = 'vi'
+            glossary = self._get_glossary(project_id) if self.enable_glossary else []
+            logger.debug(f"Window {task['window_index']}: short lines → per-line translation")
+            result = self._retry_per_line(source_lines, src_lang, tgt_lang, glossary)
+            if result and any(r.strip() for r in result):
+                return result, source_lines
+
         tm_hits = []
         all_in_tm = True
         for src in source_lines:
