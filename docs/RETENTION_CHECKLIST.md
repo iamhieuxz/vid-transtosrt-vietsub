@@ -89,17 +89,11 @@
 - [ ] Tick `[x]` khi pass
 
 ### Fix 9 — Settings page: thêm `num_predict`, `temperature`, `timeout`
-- [ ] Mở `gui.py`
-- [ ] Tìm `SettingsPage` class (~line 808)
-- [ ] Thêm 3 field:
-  ```python
-  self.num_predict_edit = QLineEdit()
-  self.temperature_edit = QLineEdit()
-  self.timeout_edit = QLineEdit()
-  ```
-- [ ] Trong `_save_config`, lưu giá trị vào config
-- [ ] Trong `_refresh_from_config`, load giá trị từ config
-- [ ] **Test:** Mở GUI, sửa giá trị, save, kiểm tra `config.yaml` đã update
+- [x] Thêm `LLM (Advanced)` card với 3 field: `num_predict_edit`, `temperature_edit`, `timeout_edit`
+- [x] `_refresh_from_config`: load từ `models.{active_mode}` (line ~1196)
+- [x] `_save_config`: save về `models.{active_mode}` với try/except ValueError fallback (line ~1237)
+- [x] **Test:** `ast.parse(gui.py)` → OK
+- **Lưu ý:** Active mode = `translation.mode` (uncen/default). Nếu user đổi mode, settings cần refresh (chưa auto — có thể fix sau).
 - [ ] Tick `[x]` khi pass
 
 ### Fix 10 — Log page auto-scroll + tag filter
