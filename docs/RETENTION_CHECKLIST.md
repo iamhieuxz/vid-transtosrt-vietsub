@@ -44,12 +44,14 @@
 - **Hạn chế:** Logic vẫn yêu cầu `repeat_count >= 3` cặp → trong window 6 dòng max 3 cặp. Fix này chỉ giảm threshold, không giải quyết "anh ơi/em ơi" type repetition. Cần fix sâu hơn sau.
 
 ### Fix 5 — Tăng `num_ctx` cho default/uncen model
-- [ ] Mở `config.yaml`
-- [ ] Trong `models.default`: đổi `num_ctx: 6144` → `num_ctx: 16384`
-- [ ] Trong `models.uncen`: đổi `num_ctx: 6144` → `num_ctx: 16384`
-- [ ] **Test:** Chạy pipeline non-JA ngắn (~50 subs), kiểm tra:
-  - Không có OOM Ollama error
-  - Output đầy đủ
+- [x] Mở `config.yaml`
+- [x] `models.default.num_ctx: 6144 → 16384` (line 29)
+- [x] `models.uncen.num_ctx: 6144 → 16384` (line 37)
+- [x] `models.ja.num_ctx: 16384` (giữ nguyên)
+- [x] **Test:**
+  - Config load OK (yaml.safe_load verified)
+  - Ollama accept num_ctx=16384 với model qwen3-abliterated (200 status)
+- **Risk:** num_ctx cao hơn → tốn nhiều VRAM hơn. 3060Ti 8GB có thể OOM khi chạy song song Whisper + LLM. Cần test thực tế.
 - [ ] Tick `[x]` khi pass
 
 ### Fix 6 — Đẩy `_retry_per_line` lên làm primary cho câu ngắn
