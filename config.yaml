@@ -8,15 +8,15 @@ whisper:
   min_silence_duration_ms: 700
   speech_pad_ms: 300
 project:
-  name: JUL-462
-  source_lang: Tiếng Nhật (Japanese)
-  target_lang: Tiếng Việt (Vietnamese)
-  input_srt: E:/HIDE/JAV/JUL-462.mp4
+  name: JUL-308
+  source_lang: Japanese
+  target_lang: Vietnamese
+  input_srt: E:/HIDE/JAV/JUL-308.mp4
   output_srt: E:\HIDE\JAV
 window:
-  size: 3
-  history: 2
-  future: 1
+  size: 6
+  history: 12
+  future: 4
 translation:
   mode: uncen
   literal_mode: false
@@ -83,5 +83,32 @@ glossary:
 - source: ちんこ
   target: dương vật
   context: từ thô, tiếng lóng
+- source: ご無
+  target: không xuất (ra ngoài)
+  context: sex - gọi tắt của 無断/ぶる遮掩, " không xuất tinh ra ngoài"
+- source: 生殖器
+  target: bộ phận sinh dục
+  context: sex - dùng "âm đạo/dương vật" khi có thể, tránh y khoa cứng
+- source: 精液
+  target: tinh dịch
+  context: sex - tinh trùng chỉ dùng khi cần chính xác
+- source: 主人
+  target: chồng
+  context: ngữ cảnh JAV - người chồng, KHÔNG dùng "chủ nhân"
+- source: 裏切る
+  target: phản bội
+  context: danh từ hóa - 裏切った = đã phản bội
+- source: 一部
+  target: một phần
+  context: 部分 của, không phải "chỉ đạo"
+- source: 指示
+  target: hướng dẫn
+  context: dạng danh từ - chỉ dẫn, không phải mệnh lệnh
+- source: 私的な
+  target: riêng tư
+  context: tính từ - cá nhân, không phải "cá nhân hóa"
+- source: そう
+  target: ừ
+  context: đồng ý nhẹ, KHÔNG dịch "vâng" (quá trang trọng)
 recent_projects:
 - E:/HIDE/JAV/JUL-462.mp4

@@ -132,6 +132,31 @@ Dữ liệu (ORIGINAL là câu gốc, ROUGH là bản dịch thô):
 """
 
 
+# Fallback khi model trả JSON thiếu phần tử (thường với model 8B): dùng
+# numbered list thay vì JSON — cùng pattern literal_translate đã hoạt động ổn.
+_POLISH_FALLBACK_TEMPLATE = """\
+{system}
+
+Trau chuốt {n} câu dịch sẵn (ROUGH) cho tự nhiên như phụ đề phim Việt.
+Vẫn phải giữ đúng NGHĨA gốc, chỉ sửa lỗi diễn đạt/sắc thái — KHÔNG đổi nội dung.
+{context_block}
+QUY TẮC:
+- Dịch lại câu ORIGINAL cho tự nhiên, dùng ROUGH làm gợi ý.
+- Giữ đúng xưng hô và cách gọi nhau nhất quán trong cả danh sách.
+- Giữ nguyên nghĩa tình dục/thô như gốc (không làm sạch, không né tránh).
+{glossary_block}
+{character_block}
+OUTPUT FORMAT (BẮT BUỘC):
+1. <câu đã trau chuốt>
+2. <câu đã trau chuốt>
+
+Trả về đúng {n} dòng, đánh số từ 1. Không thêm text ngoài danh sách.
+
+Dữ liệu:
+{pairs}
+"""
+
+
 _QA_TEMPLATE = """\
 {system}
 
@@ -573,15 +598,19 @@ class JaTranslator:
                 pass
         if not isinstance(parsed, list):
             logger.warning("JaTranslator.polish_translate: no JSON list, keeping rough")
-            return rough_translations
+            return self._polish_fallback(source_lines, rough_translations,
+                                         glossary_terms, context_block)
 
-        # Fail-fast nếu JSON trả về số phần tử sai — tránh silent mapping sai
+        # Fail-fast nếu JSON trả về số phần tử sai — tránh silent mapping sai.
+        # Model 8B hay trả thiếu phần tử khi đầu vào >3 dòng, nên thử numbered
+        # list trước khi bỏ cuộc (cùng cách literal_translate đã làm).
         if len(parsed) != len(source_lines):
             logger.warning(
                 f"JaTranslator.polish_translate: JSON length {len(parsed)} "
-                f"!= source {len(source_lines)}, keeping rough"
+                f"!= source {len(source_lines)}, trying numbered-list fallback"
             )
-            return rough_translations
+            return self._polish_fallback(source_lines, rough_translations,
+                                         glossary_terms, context_block)
 
         # Map JSON items back to source lines by id
         parsed_by_id: dict = {}
@@ -607,6 +636,53 @@ class JaTranslator:
                 single = self._translate_single_literal(original, glossary_terms)
                 result = single if single else result
             out_vn.append(result)
+        return out_vn
+
+    def _polish_fallback(self, source_lines, rough_translations,
+                         glossary_terms=None, context_block=""):
+        """Retry polish bằng numbered list khi JSON fail (model 8B hay thiếu item).
+
+        Numbered list dễ hơn JSON cho model nhỏ: chỉ cần N dòng "1. text" thay vì
+        phải cân bằng dấu ngoặc + key "id". Trả về rough nếu cả 2 cách đều fail.
+        """
+        n = len(source_lines)
+        pairs_text = _format_pairs(source_lines, rough_translations)
+        prompt = _POLISH_FALLBACK_TEMPLATE.format(
+            system=self.system_prompt,
+            n=n,
+            glossary_block=_render_glossary(glossary_terms),
+            character_block=_render_character_block(self.character_names),
+            context_block=context_block,
+            pairs=pairs_text,
+        )
+        numbered_re = re.compile(r"^\s*(\d+)[.)]\s*(.+)$")
+        try:
+            raw = self.translator.generate(prompt, temperature=0.1)
+        except Exception as e:
+            logger.warning(f"JaTranslator.polish fallback generate failed: {e}, keeping rough")
+            return rough_translations
+
+        parsed: list = []
+        for line in raw.strip().split("\n"):
+            m = numbered_re.match(line)
+            if m:
+                parsed.append(_clean_markdown(m.group(2).strip()))
+
+        if len(parsed) < n:
+            logger.warning(
+                f"JaTranslator.polish fallback: got {len(parsed)}/{n} lines, keeping rough"
+            )
+            return rough_translations
+
+        # Giữ rough cho dòng mà fallback trả rỗng/echo tiếng Nhật
+        out_vn: List[str] = []
+        for j in range(n):
+            cand = parsed[j]
+            if not cand or _is_likely_japanese_translation(cand):
+                out_vn.append(rough_translations[j])
+            else:
+                out_vn.append(cand)
+        logger.info(f"JaTranslator.polish fallback OK ({n} lines via numbered list)")
         return out_vn
 
     # --- Pass 3 ---

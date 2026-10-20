@@ -1485,26 +1485,33 @@ class TranslationPipeline:
         # Latin (\w) and CJK (we treat CJK char boundaries by requiring the
         # surrounding char to NOT be a CJK ideograph). Japanese particles like
         # ね, よ, は are SINGLE CJK char — need explicit boundary check.
+        def _is_cjk(ch: str) -> bool:
+            return bool(ch) and (
+                ch.isalnum()
+                or '\u3040' <= ch <= '\u309f'
+                or '\u30a0' <= ch <= '\u30ff'
+                or '\u4e00' <= ch <= '\u9fff'
+            )
+
         def _term_present(term: str) -> bool:
             if not term:
                 return False
-            # For terms that are pure CJK / kana, use position-based check:
-            # preceding char (if any) is NOT a CJK ideograph / kana.
+            # Term thuần CJK/kana: tiếng Nhật viết liền không có word delimiter,
+            # nên char trước CJK là bình thường (その一部 → 一部 vẫn là match đúng).
+            # Áp word-boundary ở đây chỉ khiến glossary tiếng Nhật không bao giờ match.
+            if _is_cjk(term[0]):
+                return term in joined
             idx = joined.find(term)
             if idx < 0:
                 return False
             # Check preceding char to avoid substring match like "masu" in "summarize"
-            if idx > 0:
-                prev = joined[idx - 1]
-                if prev.isalnum() or '\u3040' <= prev <= '\u309f' or '\u4e00' <= prev <= '\u9fff':
-                    # Try next occurrence
-                    idx = joined.find(term, idx + 1)
-                    if idx < 0:
-                        return False
-                    if idx > 0:
-                        prev = joined[idx - 1]
-                        if prev.isalnum() or '\u3040' <= prev <= '\u309f' or '\u4e00' <= prev <= '\u9fff':
-                            return False
+            if idx > 0 and _is_cjk(joined[idx - 1]):
+                # Try next occurrence
+                idx = joined.find(term, idx + 1)
+                if idx < 0:
+                    return False
+                if idx > 0 and _is_cjk(joined[idx - 1]):
+                    return False
             return True
 
         relevant = []
