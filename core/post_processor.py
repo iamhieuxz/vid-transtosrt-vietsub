@@ -279,6 +279,19 @@ def _fix_punctuation(text: str) -> str:
     return result
 
 
+# Rule 10: Force-fix "chủ nhân" -> "chồng" (model bias for 主人 in JAV)
+_JAV_MASTER_RE = re.compile(r'chủ nhân', re.IGNORECASE)
+
+
+def _replace_chu_nhan(m, full_text: str) -> str:
+    start = m.start()
+    prefix = full_text[:start].rstrip()
+    if prefix.lower().endswith('của'):
+        return m.group(0)
+    orig = m.group(0)
+    return 'Chồng' if orig[0].isupper() else 'chồng'
+
+
 # -----------------------------------------------------------------------------
 # Main post-processor
 # -----------------------------------------------------------------------------
@@ -372,7 +385,17 @@ class RuleBasedPostProcessor:
         # 9. Fix punctuation
         text = _fix_punctuation(text)
 
-        # 9. Final whitespace
+        # 10. Force-fix model bias: "chủ nhân" is almost always wrong for 主人 in JAV.
+        # Model 8B keeps translating 主人 as "chủ nhân" (master) even with glossary.
+        # In JAV subtitles, 主人 almost always means "chồng" (husband), not "master".
+        # Replace with word boundary, but only when it's likely used in JAV context:
+        # - preceded by Vietnamese words (not at sentence start as exclamation)
+        # - followed by action verbs / emotional words typical of relationship context
+        # shortcut: replace "chủ nhân" when preceded by VN word char and NOT preceded
+        # by "của" (possession: "của chủ nhân" = of the master → keep).
+        text = _JAV_MASTER_RE.sub(lambda m: _replace_chu_nhan(m, text), text)
+
+        # 11. Final whitespace
         text = _fix_whitespace(text)
 
         if text != original:

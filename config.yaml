@@ -11,8 +11,8 @@ project:
   name: JUL-308
   source_lang: Japanese
   target_lang: Vietnamese
-  input_srt: E:/HIDE/JAV/JUL-308.mp4
-  output_srt: E:\HIDE\JAV
+  input_srt: E:/HIDE/JAV/JUL-308/JUL-308/JUL-308.mp4
+  output_srt: E:\HIDE\JAV\JUL-308\JUL-308
 window:
   size: 6
   history: 12
@@ -94,7 +94,7 @@ glossary:
   context: sex - tinh trùng chỉ dùng khi cần chính xác
 - source: 主人
   target: chồng
-  context: ngữ cảnh JAV - người chồng, KHÔNG dùng "chủ nhân"
+  context: "chồng" BẮT BUỘC trong JAV. KHÔNG BAO GIỜ dịch "主人" thành "chủ nhân" (master/lord). Ngữ cảnh: vợ nói về chồng mình. Ví dụ: 主人を裏切って = phản bội chồng. Đây là LUẬT tuyệt đối.
 - source: 裏切る
   target: phản bội
   context: danh từ hóa - 裏切った = đã phản bội
