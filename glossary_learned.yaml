@@ -1,0 +1,19 @@
+# glossary_learned.yaml
+# Tu vung uncen tu hoc xuyen suot nhieu du an (auto-generated).
+
+- source_term: 夫婦
+  target_term: vợ chồng
+  context_hint: auto-learned (freq=11, films=7, confidence=0.85)
+
+- source_term: 濡れ
+  target_term: ướt
+  context_hint: auto-learned (freq=10, films=5, confidence=0.91)
+
+- source_term: 性欲
+  target_term: dục vọng
+  context_hint: auto-learned (freq=6, films=5, confidence=0.88)
+
+- source_term: キス
+  target_term: hôn
+  context_hint: auto-learned (freq=5, films=4, confidence=0.83)
+

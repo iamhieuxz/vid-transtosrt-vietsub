@@ -6,6 +6,9 @@ import json
 import threading
 from typing import List, Dict
 from concurrent.futures import ThreadPoolExecutor
+
+import yaml
+
 from rich.console import Console
 from rich.text import Text
 from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn, SpinnerColumn
@@ -205,6 +208,85 @@ def _resolve_lang_key(lang_name: str) -> str:
     return key if key else 'en'  # default to English prompt
 
 
+_JA_TAGGER = None
+_JA_TAGGER_FAILED = False
+_TERM_LEMMA_CACHE = {}
+
+
+def _get_ja_tagger():
+    global _JA_TAGGER, _JA_TAGGER_FAILED
+    if _JA_TAGGER is not None:
+        return _JA_TAGGER
+    if _JA_TAGGER_FAILED:
+        return None
+    try:
+        import fugashi
+        _JA_TAGGER = fugashi.Tagger()
+        return _JA_TAGGER
+    except Exception:
+        _JA_TAGGER_FAILED = True
+        return None
+
+
+def _get_term_lemmas(term: str):
+    if term in _TERM_LEMMA_CACHE:
+        return _TERM_LEMMA_CACHE[term]
+    tagger = _get_ja_tagger()
+    if tagger is None:
+        _TERM_LEMMA_CACHE[term] = []
+        return []
+    try:
+        lemmas = [getattr(w.feature, 'lemma', None) or w.surface for w in tagger(term) if w.surface.strip()]
+    except Exception:
+        lemmas = []
+    _TERM_LEMMA_CACHE[term] = lemmas
+    return lemmas
+
+
+def _normalize_glossary_entry(entry):
+    """Chuẩn hoá 1 entry glossary từ schema tùy ý về shape pipeline dùng.
+
+    Hỗ trợ cả schema cũ (source/target/context, từ config.yaml) lẫn schema mới
+    (source_term/target_term/context_hint, dùng cho glossary_*yaml).
+    """
+    src = (entry.get('source') or entry.get('source_term') or '').strip()
+    tgt = (entry.get('target') or entry.get('target_term') or '').strip()
+    if not src or not tgt:
+        return None
+    return {
+        'source_term': src,
+        'target_term': tgt,
+        'context_hint': (entry.get('context') or entry.get('context_hint') or '').strip(),
+    }
+
+
+def _merge_glossary_files(*paths) -> List[dict]:
+    """Merge nhiều glossary file theo thứ tự ưu tiên (file sau ghi đè file trước).
+
+    File không tồn tại -> bỏ qua, không error.
+    Entry thiếu field -> bỏ entry (không warn tránh log spam).
+    """
+    out = {}
+
+    def _load(path):
+        if not path or not os.path.exists(path):
+            return
+        try:
+            with open(path, encoding='utf-8') as f:
+                raw = yaml.safe_load(f) or []
+        except Exception as e:
+            logger.warning(f"Failed to load {path}: {e}")
+            return
+        for entry in raw:
+            norm = _normalize_glossary_entry(entry)
+            if norm:
+                out[norm['source_term']] = norm
+
+    for p in paths:
+        _load(p)
+    return list(out.values())
+
+
 class TranslationPipeline:
     def __init__(self, config: dict):
         self.config = config
@@ -301,17 +383,37 @@ class TranslationPipeline:
                 self.ja_context_analyzer = None
 
     def _load_glossary_terms(self, config: dict) -> List[dict]:
-        """Load glossary from config.yaml."""
+        """Load glossary từ cấu trúc tách file, thứ tự ưu tiên (sau ghi đè trước):
+        - glossary_uncen.yaml: từ tình dục (chỉ nạp khi mode uncen)
+        - glossary_common.yaml: term chung (thán từ, tên thường gặp)
+        - glossary_<project_name>.yaml: term riêng của phim (ghi đè common cùng source)
+
+        Không file nào tồn tại → fallback về config.yaml['glossary'] (schema cũ).
+        """
+        project_name = config.get('project', {}).get('name', '')
+        safe_name = re.sub(r'[^\w\-_]', '_', project_name) if project_name else ''
+        per_film_path = f'glossary_{safe_name}.yaml' if safe_name else None
+
+        paths = []
+        mode = (config.get('translation', {}) or {}).get('mode', 'uncen') or 'uncen'
+        if (mode or '').lower() == 'uncen':
+            if (config.get('pipeline', {}) or {}).get('learn_glossary', False) and os.path.exists('glossary_learned.yaml'):
+                paths.append('glossary_learned.yaml')
+            paths.append('glossary_uncen.yaml')
+        paths.append('glossary_common.yaml')
+        if per_film_path:
+            paths.append(per_film_path)
+
+        terms = _merge_glossary_files(*paths)
+        if terms:
+            return terms
+
+        # Fallback schema cũ
         terms = []
         for entry in config.get('glossary', []):
-            src = entry.get('source', '').strip()
-            tgt = entry.get('target', '').strip()
-            if src and tgt:
-                terms.append({
-                    'source_term': src,
-                    'target_term': tgt,
-                    'context_hint': entry.get('context', '').strip(),
-                })
+            norm = _normalize_glossary_entry(entry)
+            if norm:
+                terms.append(norm)
         return terms
 
     def run(self, project_id: int):
@@ -323,10 +425,16 @@ class TranslationPipeline:
 
         console.print(f"\n{STATUS_ICONS['start']} [cyan]Starting pipeline[/cyan] for project: [bold]{project['name']}[/bold]")
 
+        self._pipeline_started_at = time.monotonic()
         items = self.db.get_all_items(project_id)
         if not items:
+            split_started_at = time.monotonic()
             self._parse_srt(project_id, project['input_srt'])
             self.db.update_project_status(project_id, 'parsed')
+            self._split_seconds = time.monotonic() - split_started_at
+        else:
+            # Items đã nạp từ trước (resume/recovery) — không tính split
+            self._split_seconds = None
 
         self._create_windows(project_id, project)
         self.db.recover_stuck_tasks(project_id, self.heartbeat_timeout)
@@ -408,6 +516,7 @@ class TranslationPipeline:
                 processor = RuleBasedPostProcessor()
                 # Inject character_names để fix mistaken aliases (vd: Kasumi -> Kana)
                 processor.set_character_names(self.config.get('character_names', []))
+                processor.set_glossary_terms(self.glossary_terms)
                 post_stats = processor.process_project(
                     self.db, project_id,
                     progress_callback=lambda done, total: None,
@@ -437,8 +546,39 @@ class TranslationPipeline:
                     )
                     # Export lại sau khi fix tên
                     self._export_to_folder(project_id, project)
+                    # Gợi ý user add các fix vào glossary_<film>.yaml / glossary_common.yaml
+                    # để phim sau cùng pattern không gặp lại. In ra console, KHÔNG tự sửa file.
+                    self._suggest_glossary_updates(project_id, registry, registry_stats)
             except Exception as e:
                 logger.warning(f"CharacterRegistry failed: {e}, skipping")
+
+        # Tự học từ uncen: suy ra cặp (JA, VI) hay đi cùng nhau từ kết quả
+        # dịch, ghi ra glossary_<film>.learned.yaml (file RIÊNG, không đụng
+        # file gốc). Bật qua config.pipeline.learn_glossary.
+        if (self.config.get('pipeline', {}) or {}).get('learn_glossary', False):
+            try:
+                from .glossary_miner import (
+                    GlossaryMiner,
+                    write_learned_glossary,
+                    write_global_learned_glossary,
+                )
+                miner = GlossaryMiner(self.db, self.config)
+                candidates = miner.mine(project_id)
+                if candidates:
+                    path = write_learned_glossary(candidates, project.get('name', ''))
+                    console.print(
+                        f"\n{STATUS_ICONS['info']} [cyan]Đã học "
+                        f"{len(candidates)} từ uncen mới → {path}[/cyan]"
+                    )
+                    logger.info(
+                        f"GlossaryMiner: {len(candidates)} candidate(s) -> {path}"
+                    )
+                global_cands = miner.mine_all_projects(skip_existing=True)
+                if global_cands:
+                    gpath = write_global_learned_glossary(global_cands)
+                    logger.info(f"GlossaryMiner (cross-project): {len(global_cands)} candidate(s) -> {gpath}")
+            except Exception as e:
+                logger.warning(f"GlossaryMiner failed: {e}, skipping")
 
         pending = self.db.count_pending_windows(project_id, max_retries=self.max_retries)
         dead = self.db.count_dead_letter(project_id)
@@ -458,11 +598,15 @@ class TranslationPipeline:
 
         Với mỗi subtitle item, so sánh source JA có mention tên X không,
         và target VI có dùng canonical của X không. Nếu sai → auto-fix.
+
+        Trả về {checked, fixed, total, patterns} trong đó patterns là list các
+        cặp {"wrong": "...", "canonical": "...", "ja_source": "..."} để suggest glossary.
         """
         items = self.db.get_all_items(project_id)
         total = len(items)
         checked = 0
         fixed = 0
+        patterns_seen = {}  # (wrong, canonical) -> ja_source_sample (first seen)
         for item in items:
             source = item.get('original_text', '')
             target = item.get('translated_text', '')
@@ -477,12 +621,93 @@ class TranslationPipeline:
                         (new_target, item['id'])
                     )
                     conn.commit()
+                if hasattr(self.db, 'log_translation_error'):
+                    try:
+                        self.db.log_translation_error(
+                            project_id=project_id,
+                            sub_index=item.get('sub_index', 0),
+                            source_text=source,
+                            wrong_text=target,
+                            fixed_text=new_target,
+                            error_type='character_registry',
+                        )
+                    except Exception:
+                        pass
                 fixed += 1
+                # Track pattern (dedup trong lần chạy)
+                # Tìm diff đơn giản: substring cũ → substring mới
+                # Heuristic: nếu diff là 1 cụm từ (giới hạn độ dài), ghi nhận
+                diffs = self._extract_term_diffs(target, new_target)
+                for wrong, correct in diffs:
+                    key = (wrong, correct)
+                    if key not in patterns_seen:
+                        patterns_seen[key] = source[:80]
                 logger.debug(
                     f"CharacterRegistry: sub {item['sub_index']} fixed: "
                     f"'{target[:50]}...' -> '{new_target[:50]}...'"
                 )
-        return {'checked': checked, 'fixed': fixed, 'total': total}
+        # Chuyển dict -> list để JSON-serializable
+        patterns = [
+            {'wrong': w, 'canonical': c, 'sample_source': src}
+            for (w, c), src in patterns_seen.items()
+        ]
+        return {'checked': checked, 'fixed': fixed, 'total': total, 'patterns': patterns}
+
+    @staticmethod
+    def _extract_term_diffs(old: str, new: str, max_word_len: int = 12) -> list:
+        """Tách diff simple: tìm cụm từ chung mà khác nhau giữa old/new.
+
+        Cheap heuristic cho subtitle: tokenize theo khoảng trắng rồi so sánh theo
+        vị trí. Chỉ giữ cặp wrong/canonical có độ dài hợp lý (< max_word_len).
+        """
+        old_toks = old.split()
+        new_toks = new.split()
+        # Cùng số token: so từng cặp
+        if len(old_toks) == len(new_toks):
+            pairs = []
+            for o, n in zip(old_toks, new_toks):
+                if o != n and len(o) <= max_word_len and len(n) <= max_word_len:
+                    pairs.append((o, n))
+            return pairs
+        # Khác số token: bỏ qua, dễ sai (cụm thay thế nhiều từ)
+        return []
+
+    def _suggest_glossary_updates(self, project_id: int, registry, registry_stats: dict):
+        """In ra console các candidate glossary term từ CharacterRegistry fixes.
+
+        User xem và tự quyết định add vào glossary_<film>.yaml hoặc glossary_common.yaml.
+        KHÔNG tự ý sửa file — chỉ in suggestion kèm đường dẫn file để user mở.
+
+        Tránh suggest các cụm từ quá dài (gặp 1 lần) để khỏi spam.
+        """
+        patterns = registry_stats.get('patterns') or []
+        if not patterns:
+            return
+        # Lọc: chỉ giữ pattern có canonical là từ điển (len reasonable, không chứa kanji)
+        filtered = [
+            p for p in patterns
+            if 1 <= len(p['wrong']) <= 8 and 1 <= len(p['canonical']) <= 15
+            and not re.search(r'[\u3040-\u30ff\u4e00-\u9fff]', p['canonical'])  # canonical là Việt
+            and p['wrong'] != p['canonical']
+        ]
+        if not filtered:
+            return
+        console.print(
+            f"\n{STATUS_ICONS['info']} [cyan]Glossary candidates from "
+            f"CharacterRegistry fixes ({len(filtered)} pattern(s)):[/cyan]"
+        )
+        project_name = self.config.get('project', {}).get('name', '')
+        safe = re.sub(r'[^\w\-_]', '_', project_name) if project_name else ''
+        per_film_path = f'glossary_{safe}.yaml' if safe else 'glossary_<film>.yaml'
+        console.print(f"  Copy các dòng dưới vào [bold]{per_film_path}[/bold] hoặc glossary_common.yaml:")
+        for p in filtered[:15]:
+            console.print(
+                f"    - source_term: {p['wrong']!s}\n"
+                f"      target_term: {p['canonical']!s}\n"
+                f"      context_hint: auto-extracted from CharacterRegistry"
+            )
+        if len(filtered) > 15:
+            console.print(f"    ... and {len(filtered) - 15} more")
 
     def _export_to_folder(self, project_id: int, project: dict):
         """
@@ -533,6 +758,13 @@ class TranslationPipeline:
         table.add_row("Progress", f"{progress_pct:.1f}%")
         table.add_row("Pending", str(pending))
         table.add_row("Failed (dead letter)", str(dead))
+        # Thời gian dự án: tính từ trước khi split input tới khi in summary.
+        # Nếu resume (DB đã có items sẵn) → không có mốc split, hiển thị total only.
+        total_seconds = time.monotonic() - getattr(self, '_pipeline_started_at', time.monotonic())
+        elapsed = self._format_elapsed(total_seconds, getattr(self, '_split_seconds', None))
+        table.add_row("Total time", elapsed[0])
+        if elapsed[1] is not None:
+            table.add_row("  - Split input", elapsed[1])
         if refined_stats:
             if refined_stats.get('translated', 0) > 0:
                 table.add_row(
@@ -546,6 +778,24 @@ class TranslationPipeline:
                     f"{refined_stats['refined']}/{refined_stats['total']}"
                 )
         console.print(table)
+
+    @staticmethod
+    def _format_elapsed(total_seconds: float, split_seconds: float | None = None) -> tuple:
+        """Format (total_str, split_str_or_None). H/m/s, days chỉ khi >= 24h."""
+        def _fmt(sec: float) -> str:
+            sec = int(sec)
+            d, rem = divmod(sec, 86400)
+            h, rem = divmod(rem, 3600)
+            m, s = divmod(rem, 60)
+            if d:
+                return f"{d}d {h}h {m}m {s}s"
+            if h:
+                return f"{h}h {m}m {s}s"
+            if m:
+                return f"{m}m {s}s"
+            return f"{s}s"
+
+        return _fmt(total_seconds), (_fmt(split_seconds) if split_seconds is not None else None)
 
     def _parse_srt(self, project_id, input_path):
         import pysrt
@@ -576,18 +826,8 @@ class TranslationPipeline:
         if not items:
             raise ValueError(f"{STATUS_ICONS['error']} No subtitle items found in: {input_path}")
 
-        # Whisper artifact normalizer: thay romaji/kana đơn lẻ (うん, ありがとう, 塩)
-        # bằng tiếng Việt TRƯỚC khi dịch → giảm lỗi "chưa dịch" ở output.
-        # Chỉ áp dụng khi source là JA (Whisper artifact là vấn đề riêng của JA).
-        if self._is_japanese_source:
-            try:
-                from .whisper_normalizer import normalize_items
-                items = normalize_items(items)
-            except Exception as e:
-                logger.warning(f"WhisperNormalizer failed (non-blocking): {e}")
-
-        # Sub merger: gộp sub rỗng/dài bất thường (vd: 70s sub 塩? lặp 3 lần ở JUR-859)
-        # trước khi splitter chia sub — tránh sub "chờ" kéo dài 30s+
+        # Sub merger: gộp sub rỗng/dài bất thường và khâu từ bị Whisper cắt đứt
+        # TRƯỚC khi chạy WhisperNormalizer (để giữ nguyên mặt chữ kana khi merge/dedup)
         if self._is_japanese_source:
             try:
                 from .sub_merger import merge_srt_items
@@ -600,6 +840,16 @@ class TranslationPipeline:
                     )
             except Exception as e:
                 logger.warning(f"SubMerger failed (non-blocking): {e}")
+
+        # Whisper artifact normalizer: thay romaji/kana đơn lẻ (うん, ありがとう, 塩)
+        # bằng tiếng Việt TRƯỚC khi dịch → giảm lỗi "chưa dịch" ở output.
+        # Chỉ áp dụng khi source là JA (Whisper artifact là vấn đề riêng của JA).
+        if self._is_japanese_source:
+            try:
+                from .whisper_normalizer import normalize_items
+                items = normalize_items(items)
+            except Exception as e:
+                logger.warning(f"WhisperNormalizer failed (non-blocking): {e}")
 
         # Long cues cannot be split accurately without speech alignment. Keep
         # source timestamps and flag suspicious durations for targeted review.
@@ -924,7 +1174,7 @@ class TranslationPipeline:
                             logger.warning(f"RuleProcessor failed (non-blocking): {e}")
 
                         self.db.commit_window(project_id, win_id, start_sub, end_sub, translations)
-                        self._save_to_tm(project, source_lines, translations)
+                        # Không lưu vào TM khi window fail validation để tránh làm bẩn TM
                         return True
                     except Exception as e:
                         logger.error(f"{STATUS_ICONS['error']} commit_window (validation-fallback) failed: {e}")
@@ -1118,12 +1368,21 @@ class TranslationPipeline:
         return translations if translations else None
 
     def _get_glossary_for_window(self, task, project):
-        """Lấy glossary terms cho window hiện tại (dùng cho retry per-line)."""
-        # Trả về glossary terms dạng list of dicts
-        # Tìm trong project config nếu có
-        if hasattr(project, 'get') and project.get('glossary'):
-            return project['glossary']
-        return None
+        """Lấy glossary terms cho window hiện tại (dùng cho retry per-line).
+
+        Fix: trước đây trả `project['glossary']` — cột này KHÔNG tồn tại trong
+        bảng `projects` nên luôn None => retry per-line mất sạch glossary
+        (mất xưng hô, mất tên riêng). Giờ dùng đúng nguồn như `_get_glossary`
+        và lọc theo window để prompt nhỏ.
+        """
+        project_id = project.get('id') if hasattr(project, 'get') else None
+        if project_id is None:
+            return []
+        glossary = self._get_glossary(project_id) if self.enable_glossary else []
+        source_lines = task.get('_source_lines') or []
+        if not source_lines:
+            return glossary
+        return self._filter_glossary_for_window(glossary, source_lines)
 
     def _translate_window_ja(self, task, source_lines, sub_indices, glossary, project_id):
         """Luồng dịch riêng cho tiếng Nhật: 3-pass (literal → polish → qa)
@@ -1152,6 +1411,16 @@ class TranslationPipeline:
 
         # Lấy context cho window hiện tại (2-tier)
         context_summary = self._get_ja_context_for_window(task, project_id)
+
+        # Lọc glossary trước khi render: chỉ giữ terms xuất hiện trong source_lines.
+        # JA path trước đây dump cả glossary (2000 term vẫn đổ hết vào), gây tràn num_ctx.
+        # ZH path đã dùng _filter_glossary_for_window từ trước; giờ JA thống nhất.
+        if glossary and source_lines:
+            glossary = self._filter_glossary_for_window(glossary, source_lines)
+            logger.debug(
+                f"Window {task['window_index']}: filtered glossary to {len(glossary)} term(s) "
+                f"matching {len(source_lines)} source line(s)"
+            )
 
         # Pass 1: literal
         rough = self.ja_translator.literal_translate(
@@ -1474,6 +1743,13 @@ class TranslationPipeline:
         Substring match produces false positives like `masu` matching `emasculate`
         or `summarize`. We must also handle JA characters (no \b in Python regex
         with Unicode), so we wrap terms with explicit non-word guards.
+
+        Fix 2 (ưu tiên term dài): term CJK là substring của term khác
+        (レノ ⊂ レノさん) → cả hai cùng match → LLM nhận 2 mục mâu thuẫn.
+        Giữ term dài, bỏ term ngắn bị chứa trong term đã match.
+
+        Fix 3 (anchor đuôi câu): term kết thúc bằng dấu câu (`ん?`, `え?`)
+        chỉ match khi nằm ở CUỐI câu, không match giữa câu.
         """
         if not glossary or not source_lines:
             return glossary or []
@@ -1487,39 +1763,118 @@ class TranslationPipeline:
         # ね, よ, は are SINGLE CJK char — need explicit boundary check.
         def _is_cjk(ch: str) -> bool:
             return bool(ch) and (
-                ch.isalnum()
-                or '\u3040' <= ch <= '\u309f'
+                '\u3040' <= ch <= '\u309f'
                 or '\u30a0' <= ch <= '\u30ff'
                 or '\u4e00' <= ch <= '\u9fff'
             )
 
-        def _term_present(term: str) -> bool:
+        def _is_word_char(ch: str) -> bool:
+            return bool(ch) and (ch.isalnum() or _is_cjk(ch))
+
+        # Fix 3: term kết thúc bằng dấu câu → phải ở cuối câu (sau khi bỏ
+        # khoảng trắng). Đây là hậu tố câu hỏi, không phải chuỗi con bất kỳ.
+        _SENTENCE_END = '?!。！？…'
+        _window_tokens_cache = None
+
+        def _get_window_tokens():
+            nonlocal _window_tokens_cache
+            if _window_tokens_cache is not None:
+                return _window_tokens_cache
+            tagger = _get_ja_tagger()
+            if tagger is None:
+                _window_tokens_cache = []
+                return _window_tokens_cache
+            toks = []
+            cur = 0
+            try:
+                for w in tagger(joined):
+                    surf = w.surface
+                    if not surf or not surf.strip():
+                        continue
+                    idx = joined.find(surf, cur)
+                    if idx < 0:
+                        idx = cur
+                    else:
+                        cur = idx + len(surf)
+                    lemma = getattr(w.feature, 'lemma', None) or surf
+                    toks.append((idx, surf, lemma))
+            except Exception:
+                toks = []
+            _window_tokens_cache = toks
+            return _window_tokens_cache
+
+        def _match_positions(term: str) -> List[int]:
+            """Vị trí (index trong joined) mà term xuất hiện, theo luật match."""
+            positions = []
             if not term:
-                return False
-            # Term thuần CJK/kana: tiếng Nhật viết liền không có word delimiter,
-            # nên char trước CJK là bình thường (その一部 → 一部 vẫn là match đúng).
-            # Áp word-boundary ở đây chỉ khiến glossary tiếng Nhật không bao giờ match.
+                return positions
             if _is_cjk(term[0]):
-                return term in joined
-            idx = joined.find(term)
-            if idx < 0:
-                return False
-            # Check preceding char to avoid substring match like "masu" in "summarize"
-            if idx > 0 and _is_cjk(joined[idx - 1]):
-                # Try next occurrence
-                idx = joined.find(term, idx + 1)
-                if idx < 0:
-                    return False
-                if idx > 0 and _is_cjk(joined[idx - 1]):
-                    return False
-            return True
+                if term[-1] in _SENTENCE_END:
+                    # Chỉ match ở cuối câu
+                    stripped = joined.rstrip()
+                    if stripped.endswith(term):
+                        positions.append(len(stripped) - len(term))
+                    return positions
+                pos = 0
+                while True:
+                    i = joined.find(term, pos)
+                    if i < 0:
+                        break
+                    positions.append(i)
+                    pos = i + 1
+                # Fallback hình thái học (fugashi lemma): bắt động từ/tính từ đã chia
+                # VD: 濡れる khớp 濡れていた, 気持ちいい khớp 気持ちよかった, 舐める khớp 舐めたい
+                if not positions and len(term) >= 2:
+                    t_lemmas = _get_term_lemmas(term)
+                    w_toks = _get_window_tokens() if t_lemmas else []
+                    k = len(t_lemmas)
+                    if k > 0 and len(w_toks) >= k:
+                        for idx in range(len(w_toks) - k + 1):
+                            if w_toks[idx][1][0] != term[0]:
+                                continue
+                            if [w_toks[idx + j][2] for j in range(k)] == t_lemmas:
+                                positions.append(w_toks[idx][0])
+                return positions
+            # Latin: cần word boundary (tránh 'masu' trong 'summarize')
+            pos = 0
+            while True:
+                i = joined.find(term, pos)
+                if i < 0:
+                    break
+                left_ok = (i == 0 or not _is_word_char(joined[i - 1]))
+                right_ok = (i + len(term) >= len(joined) or not _is_word_char(joined[i + len(term)]))
+                if left_ok and right_ok:
+                    positions.append(i)
+                pos = i + 1
+            return positions
+
+        # Fix 2: xử lý term dài trước, rồi bỏ term ngắn chỉ khi mọi vị trí match
+        # của nó đều bị term đã giữ phủ (tức là không có dòng nào chỉ dùng
+        # term ngắn). Giữ theo thứ tự glossary gốc để prompt ổn định.
+        candidates = [t for t in glossary if t.get('source_term', '').strip()]
+        candidates.sort(key=lambda t: -len(t['source_term'].strip()))
 
         relevant = []
-        for term in glossary:
-            src_term = term.get('source_term', '').strip()
-            if src_term and _term_present(src_term):
-                relevant.append(term)
+        kept = []  # [(source_term, [vị trí match]), ...]
+        for term in candidates:
+            src_term = term['source_term'].strip()
+            positions = _match_positions(src_term)
+            if not positions:
+                continue
+            # Bỏ nếu mọi vị trí match đều nằm trong span của term đã giữ
+            covered = all(
+                any(kstart <= p < kstart + len(kterm)
+                    for kterm, kpos in kept for kstart in kpos)
+                for p in positions
+            )
+            if covered:
+                continue
+            relevant.append(term)
+            kept.append((src_term, positions))
 
+        # Giữ thứ tự gốc (glossary list) cho output ổn định
+        order = {id(t): i for i, t in enumerate(glossary)}
+        relevant.sort(key=lambda t: order[id(t)])
         return relevant
 
     def _build_character_names_block(self) -> str:
@@ -1559,6 +1914,8 @@ class TranslationPipeline:
             for s, t in zip(source_lines, translations):
                 if s.strip() and t.strip():
                     self.db.save_translation_memory(src_lang, tgt_lang, s, t, domain=domain, confidence=0.95, min_char_count=4)
+                    if 4 <= len(s.strip()) <= 35:
+                        self.db.save_translation_memory(src_lang, tgt_lang, s, t, domain='global', confidence=0.90, min_char_count=4)
 
     def _recover_dead_letters(self, project_id, project):
         """

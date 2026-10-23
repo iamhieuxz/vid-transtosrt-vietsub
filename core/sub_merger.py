@@ -62,6 +62,11 @@ def merge_srt_items(items: list, max_empty_dur_s: float = 10.0,
 
     # Bước 0: gom các sub trùng text liên tiếp (Whisper lặp cùng 1 cụm từ)
     # VD: 塩? / 塩? / 塩? → 1 sub duy nhất
+    # Whisper cũng lặp câu DÀI (VD JUL-837: もうやめてくれよ ×6) → gom luôn.
+    # Điều kiện: >= 2 sub liên tiếp cùng text VÀ nằm sát nhau trong thời gian
+    # (cùng 1 đoạn thoại bị nhân bản), KHÔNG gom nếu cách xa nhau (nhân vật
+    # lặp lại câu ở chỗ khác trong phim).
+    _DUP_GAP_MAX_S = 2.0
     deduped = []
     i = 0
     while i < len(items):
@@ -70,12 +75,10 @@ def merge_srt_items(items: list, max_empty_dur_s: float = 10.0,
         # Nếu text ngắn (1-3 chars) và sub tiếp theo có cùng text → gom
         if 1 <= len(cur_text) <= 3 and _SHORT_KANA_RE.match(cur_text):
             j = i + 1
-            while j < len(items):
-                next_text = (items[j].get('text') or '').strip()
-                if next_text == cur_text:
-                    j += 1
-                else:
-                    break
+            while (j < len(items)
+                   and (items[j].get('text') or '').strip() == cur_text
+                   and _get_duration(cur['end'], items[j]['start']) <= _DUP_GAP_MAX_S):
+                j += 1
             if j > i + 1:
                 # Có >= 2 sub lặp → gom thành 1
                 last = items[j - 1]
@@ -91,6 +94,22 @@ def merge_srt_items(items: list, max_empty_dur_s: float = 10.0,
                 logger.debug(
                     f"SubMerger: dedup {j - i} identical short-kana subs "
                     f"({cur['index']}..{last['index']})"
+                )
+                i = j
+                continue
+        # Câu dài bị Whisper nhân bản liên tiếp (>= 2 lần, cách nhau <= 2s)
+        elif len(cur_text) >= 4:
+            j = i + 1
+            while (j < len(items)
+                   and (items[j].get('text') or '').strip() == cur_text
+                   and _get_duration(cur['end'], items[j]['start']) <= _DUP_GAP_MAX_S):
+                j += 1
+            if j > i + 1:
+                last = items[j - 1]
+                deduped.append({**cur, 'end': last['end']})
+                logger.info(
+                    f"SubMerger: dedup {j - i} identical long subs "
+                    f"({cur['index']}..{last['index']}): {cur_text[:30]!r}"
                 )
                 i = j
                 continue
@@ -111,6 +130,30 @@ def merge_srt_items(items: list, max_empty_dur_s: float = 10.0,
             logger.debug(f"SubMerger: skipping empty sub {item['index']} ({dur:.1f}s)")
             i += 1
             continue
+
+        # Case 1b: Whisper first-token silence split — từ đầu bị gán cả đoạn im lặng 6s-60s
+        # rồi bị cắt ngay giữa từ (end của cue này chạm sát start của cue kế tiếp <= 0.25s)
+        if text and len(text) <= 5 and dur >= 6.0 and i + 1 < len(items):
+            next_item = items[i + 1]
+            gap_to_next = abs(_get_duration(item['end'], next_item['start']))
+            if gap_to_next <= 0.25:
+                next_text = (next_item.get('text') or '').strip()
+                joiner = '\n' if text[-1] in '。！？!?…' else ''
+                clamped_start = _format_time(
+                    max(_parse_time(item['start']), _parse_time(item['end']) - max(0.5, 0.18 * len(text)))
+                )
+                merged.append({
+                    **item,
+                    'start': clamped_start,
+                    'end': next_item['end'],
+                    'text': f"{text}{joiner}{next_text}".strip(),
+                })
+                logger.debug(
+                    f"SubMerger: healed split-word cue {item['index']} ({dur:.1f}s, {text!r}) "
+                    f"+ cue {next_item['index']} ({next_text!r})"
+                )
+                i += 2
+                continue
 
         # Case 2: sub text ngắn (1-3 chars kana) + duration > 15s → merge với sub kế
         if text and _SHORT_KANA_RE.match(text) and dur > short_kana_min_dur_s:

@@ -788,10 +788,10 @@ def _(self):
         # Mock ja_translator (3-pass) - chạy đúng
         class MockJaTranslator:
             def literal_translate(self, source_lines, glossary_terms=None):
-                return [f"literal {s}" for s in source_lines]
+                return [f"literal_{i+1} noi dung {chr(97+i)}" for i in range(len(source_lines))]
             def polish_translate(self, source_lines, rough_translations,
                                  glossary_terms=None, context_summary=None):
-                return [f"polished {s}" for s in source_lines]
+                return [f"polished_{i+1} ket qua {chr(97+i)}" for i in range(len(source_lines))]
             def qa_review(self, source_lines, translations,
                           glossary_terms=None, context_summary=None):
                 # Mỗi dòng ok=True

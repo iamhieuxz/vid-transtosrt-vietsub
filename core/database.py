@@ -120,6 +120,29 @@ class Database:
         if 'content_hash' not in cols:
             c.execute("ALTER TABLE window_contexts ADD COLUMN content_hash TEXT")
 
+        c.execute('''CREATE TABLE IF NOT EXISTS translation_errors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER,
+            sub_index INTEGER,
+            source_text TEXT,
+            wrong_text TEXT,
+            fixed_text TEXT,
+            error_type TEXT DEFAULT 'auto',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(project_id, sub_index, error_type))''')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_trans_errors_project ON translation_errors(project_id)')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS learned_terms (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_term TEXT UNIQUE,
+            target_term TEXT,
+            freq INTEGER DEFAULT 1,
+            project_count INTEGER DEFAULT 1,
+            confidence REAL DEFAULT 0.0,
+            status TEXT DEFAULT 'active',
+            context_hint TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+
         conn.commit()
         conn.close()
 
@@ -443,3 +466,72 @@ class Database:
                                    WHERE project_id=? AND context_window_index=?''',
                                 (project_id, context_window_index)).fetchone()
             return dict(row) if row else None
+
+
+    def get_all_projects(self):
+        """Trả về toàn bộ các project đã có dữ liệu trong DB."""
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM projects WHERE status IN ('completed','parsed','completed_with_errors','partial') ORDER BY id"
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    # --- Translation Errors & Learned Terms (cross-project learning) ---
+    def log_translation_error(self, project_id, sub_index, source_text, wrong_text, fixed_text, error_type='auto'):
+        """Ghi nhận lỗi dịch đã sửa để phục vụ huấn luyện / rút luật cho dự án sau."""
+        if not source_text or not fixed_text or wrong_text == fixed_text:
+            return
+        with self._get_connection() as conn:
+            conn.execute('''INSERT INTO translation_errors
+                            (project_id, sub_index, source_text, wrong_text, fixed_text, error_type)
+                            VALUES (?,?,?,?,?,?)
+                            ON CONFLICT(project_id, sub_index, error_type) DO UPDATE SET
+                            source_text=excluded.source_text,
+                            wrong_text=excluded.wrong_text,
+                            fixed_text=excluded.fixed_text,
+                            created_at=CURRENT_TIMESTAMP''',
+                         (project_id, sub_index, source_text, wrong_text, fixed_text, error_type))
+            conn.commit()
+
+    def get_translation_errors(self, project_id=None, limit=200):
+        with self._get_connection() as conn:
+            if project_id is not None:
+                rows = conn.execute(
+                    "SELECT * FROM translation_errors WHERE project_id=? ORDER BY id DESC LIMIT ?",
+                    (project_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM translation_errors ORDER BY id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            return [dict(r) for r in rows]
+
+    def upsert_learned_term(self, source_term, target_term, freq=1, confidence=0.0,
+                            project_count=1, context_hint='', status='active'):
+        if not source_term or not target_term:
+            return
+        with self._get_connection() as conn:
+            conn.execute('''INSERT INTO learned_terms
+                            (source_term, target_term, freq, project_count, confidence, status, context_hint)
+                            VALUES (?,?,?,?,?,?,?)
+                            ON CONFLICT(source_term) DO UPDATE SET
+                            target_term=excluded.target_term,
+                            freq=MAX(learned_terms.freq, excluded.freq),
+                            project_count=MAX(learned_terms.project_count, excluded.project_count),
+                            confidence=MAX(learned_terms.confidence, excluded.confidence),
+                            context_hint=excluded.context_hint,
+                            updated_at=CURRENT_TIMESTAMP''',
+                         (source_term, target_term, freq, project_count, confidence, status, context_hint))
+            conn.commit()
+
+    def get_learned_terms(self, min_confidence=0.75, min_freq=3, status='active'):
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                '''SELECT source_term, target_term, freq, project_count, confidence, context_hint
+                   FROM learned_terms
+                   WHERE status=? AND confidence>=? AND freq>=?
+                   ORDER BY project_count DESC, freq DESC, confidence DESC''',
+                (status, min_confidence, min_freq),
+            ).fetchall()
+            return [dict(r) for r in rows]

@@ -1,0 +1,92 @@
+# glossary_JUL-837.yaml
+# Riêng cho phim JUL-837. Term ghi đè glossary_common/glossary_uncen nếu cùng
+# source_term nhưng nghĩa ở phim này khác.
+#
+# Pattern file:  glossary_<project_name>.yaml
+# project_name lấy từ config.yaml['project']['name'] (ký tự không phải
+# [A-Za-z0-9_-] sẽ được thay bằng '_').
+#
+# NHÂN VẬT:
+#   - Kousuke  → nam chính, đồng nghiệp. Whisper viết NHIỀU kiểu:
+#       光介 (kanji) / コウスケ (katakana) / コスケ / こうすけ (hiragana)
+#   - Minami   → vợ trưởng phòng. Whisper: ミナミさん / ミナミ
+#   - Miyabe   → đồng nghiệp khác. Whisper viết 宮部 (kanji), KHÔNG phải kana
+#   - Ryoko    → bạn của Minami. Whisper: りょーこ
+#
+# ⚠ BẢO TRÌ: Whisper đổi kana/kanji giữa các lần chạy. Mỗi lần chạy lại
+# phải kiểm tra source_term còn tồn tại trong .srt mới không:
+#     python tests/check_glossary_stale.py E:/HIDE/JAV/JUL-837
+# Không kiểm → glossary không match → LLM tự dịch tên → "Kouzuke"/"Mina mi".
+# Giữ cả biến thể cũ (kana/kanji) làm dự phòng cho lần Whisper sau.
+#
+# Schema: source_term / target_term / context_hint
+
+- source_term: 光介
+  target_term: Kousuke
+  context_hint: TÊN nam chính (kanji), LUÔN "Kousuke", KHÔNG "Kou suke"/"Kusuke"/"Hikaru"
+- source_term: コウスケ
+  target_term: Kousuke
+  context_hint: TÊN nam chính (katakana), LUÔN "Kousuke"
+- source_term: こうすけ
+  target_term: Kousuke
+  context_hint: TÊN nam chính (hiragana), LUÔN "Kousuke"
+- source_term: コスケ
+  target_term: Kousuke
+  context_hint: biến thể thân mật của tên chính, LUÔN "Kousuke"
+- source_term: こうすけさん
+  target_term: Kousuke
+  context_hint: tên + kính ngữ, bỏ hậu tố "-san"
+- source_term: Koukusu
+  target_term: Kousuke
+  context_hint: Whisper nghe sai, cùng 1 người
+- source_term: おいこうすけ
+  target_term: Kousuke
+  context_hint: Whisper viết liền, tách thành "Kousuke"
+- source_term: こうすけ・み
+  target_term: Kousuke
+  context_hint: Whisper artifact, cùng 1 người
+- source_term: ミナミさん
+  target_term: Minami
+  context_hint: TÊN nữ (vợ trưởng phòng), bỏ hậu tố "-san", LUÔN "Minami", KHÔNG "Mina mi"/"Mina"
+- source_term: ミナミ
+  target_term: Minami
+  context_hint: TÊN nữ, LUÔN "Minami"
+- source_term: みなみさん
+  target_term: Minami
+  context_hint: biến thể hiragana, cùng 1 người
+- source_term: みなみ
+  target_term: Minami
+  context_hint: biến thể hiragana, cùng 1 người
+- source_term: 宮部さん
+  target_term: Miyabe
+  context_hint: TÊN người khác, bỏ hậu tố "-san", LUÔN "Miyabe", KHÔNG "Miyame"
+- source_term: 宮部
+  target_term: Miyabe
+  context_hint: TÊN người, LUÔN "Miyabe", KHÔNG "Miyame"
+- source_term: りょーこ
+  target_term: Ryoko
+  context_hint: TÊN nữ (bạn của Minami), LUÔN "Ryoko", KHÔNG "Ryouko"/"Lyoko"
+- source_term: 部長
+  target_term: trưởng phòng
+  context_hint: chức vụ, KHÔNG "bộ trưởng"/"trưởng bộ"
+- source_term: 部長奥さん
+  target_term: vợ trưởng phòng
+  context_hint: vợ sếp, KHÔNG "vợ bộ trưởng"
+- source_term: 同僚
+  target_term: đồng nghiệp
+  context_hint: ''
+- source_term: 主役
+  target_term: nhân vật chính
+  context_hint: ''
+- source_term: 嘘
+  target_term: nói dối
+  context_hint: nghĩa là "nói sai", KHÔNG dịch "lừa đảo" (nghe như gian lận)
+- source_term: 嘘だぜ
+  target_term: nói dối đấy
+  context_hint: KHÔNG dịch "lừa đảo"
+- source_term: 彼氏
+  target_term: bạn trai
+  context_hint: 'NGHĨA: boyfriend. Khi phim nói về người tình ngoài luật (セフレ) thì dùng "người tình", KHÔNG dùng "bạn trai"'
+- source_term: セックスフレンド
+  target_term: người tình
+  context_hint: viết tắt của セフレ, cùng target

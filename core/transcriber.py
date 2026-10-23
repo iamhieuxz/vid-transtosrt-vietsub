@@ -61,6 +61,9 @@ class WhisperTranscriber:
         self.vad_filter = config.get('vad_filter', True)
         self.min_silence_duration_ms = config.get('min_silence_duration_ms', 500)
         self.speech_pad_ms = config.get('speech_pad_ms', 300)
+        # Cue vua 6s (chuẩn phụ đề). Segment Whisper dài hơn sẽ được tách
+        # bằng word timestamps; rỗng thì fallback về 1 cue gốc.
+        self.max_cue_ms = config.get('max_cue_ms', 6000)
         # Cờ cho phép auto-fallback về CPU khi GPU load fail (OOM / thiếu DLL).
         # Mặc định True vì GPU 4GB không chạy nổi large-v3.
         self.allow_cpu_fallback = config.get('allow_cpu_fallback', True)
@@ -91,8 +94,7 @@ class WhisperTranscriber:
 
         self.model = self._load_model_with_fallback()
 
-    @staticmethod
-    def _detect_vram_mb():
+    def _detect_vram_mb(self):
         """Trả về VRAM MB. Trả None nếu không đọc được."""
         try:
             import subprocess
@@ -347,7 +349,8 @@ class WhisperTranscriber:
                 vad_parameters=dict(
                     min_silence_duration_ms=self.min_silence_duration_ms,
                     speech_pad_ms=self.speech_pad_ms,
-                )
+                ),
+                word_timestamps=True,
             )
 
             segment_list = list(segments)
@@ -355,27 +358,25 @@ class WhisperTranscriber:
 
             with open(output_srt_path, 'w', encoding='utf-8') as f:
                 idx = 1
-                with tqdm(total=total_duration, unit='s', desc="[TRANSCRIBER] Transcribing", 
+                with tqdm(total=total_duration, unit='s', desc="[TRANSCRIBER] Transcribing",
                          bar_format="{l_bar}{bar}| {n:.1f}s/{total}s ({percentage:>3.0f}%)") as pbar:
                     last_end = 0
                     for segment in segment_list:
                         offset = max(0.0, float(start_seconds or 0.0))
-                        start = self._format_time(segment.start + offset)
-                        end = self._format_time(segment.end + offset)
-                        text = segment.text.strip()
-
-                        # Filter: Bo segment rác
-                        if self._is_noise_segment(text):
-                            logger.debug(f"[TRANSCRIBER] Skipping noise segment: {text[:50]}")
-                            pbar.update(segment.end - last_end)
-                            last_end = segment.end
-                            continue
-
-                        f.write(f"{idx}\n{start} --> {end}\n{text}\n\n")
-                        idx += 1
+                        # Tách segment dài thành nhiều cue dựa trên word timestamps
+                        # (fix cue 70s+ từ NSPS-692). shortcut: chỉ áp dụng nếu
+                        # Whisper trả về word-level info; rỗng thì fallback 1 cue.
+                        sub_cues = self._split_by_words(segment, offset)
+                        for cue_start, cue_end, cue_text in sub_cues:
+                            if self._is_noise_segment(cue_text):
+                                logger.debug(f"[TRANSCRIBER] Skipping noise segment: {cue_text[:50]}")
+                                continue
+                            f.write(
+                                f"{idx}\n{cue_start} --> {cue_end}\n{cue_text}\n\n"
+                            )
+                            idx += 1
                         pbar.update(segment.end - last_end)
                         last_end = segment.end
-
             logger.info(f"[TRANSCRIBER] Complete: {output_srt_path} ({idx - 1} segments)")
             return output_srt_path
         finally:
@@ -406,6 +407,73 @@ class WhisperTranscriber:
         finally:
             if os.path.exists(output_path):
                 os.remove(output_path)
+
+    def _split_by_words(self, segment, offset: float = 0.0):
+        """Chia segment dài thành nhiều cue nhờ word timestamps.
+
+        Whisper đo timestamp theo cả câu, nên một câu ngắn có thể bị gán
+        hàng chục giây (cue 70s trong NSPS-692). Word timestamps đo thời lượng
+        thật từng từ nên tách cue ra khớp với lời nói.
+
+        Trả về list (start_ts, end_ts, text); nếu không có word timestamps thì
+        trả về đúng 1 cue theo timestamp gốc của segment.
+        """
+        max_ms = self.max_cue_ms
+        duration = (segment.end - segment.start) * 1000
+
+        # Segment ngắn hoặc không có word info → giữ nguyên 1 cue
+        words = getattr(segment, 'words', None)
+        if duration <= max_ms or not words:
+            return [(
+                self._format_time(segment.start + offset),
+                self._format_time(segment.end + offset),
+                segment.text.strip(),
+            )]
+
+        def _eff_start(w):
+            w_len = max(1, len((getattr(w, 'word', '') or '').strip()))
+            max_word_dur = max(1.2, min(3.0, w_len * 0.35))
+            if (w.end - w.start) > max_word_dur:
+                return max(w.start, w.end - max(0.4, w_len * 0.18))
+            return w.start
+
+        cues = []
+        chunk = []
+        for word in words:
+            chunk.append(word)
+            chunk_ms = (chunk[-1].end - _eff_start(chunk[0])) * 1000
+            chunk_text = ''.join(w.word for w in chunk).strip()
+            # Cắt khi từ này kết thúc mệnh đề VÀ chunk đã đủ dài, hoặc khi
+            # chunk vượt ngưỡng cứng mà không có dấu câu để bám (1.5×) và đủ >= 5 ký tự.
+            if (chunk_ms >= max_ms and self._ends_clause(word)) or (
+                chunk_ms >= max_ms * 1.5 and len(chunk_text) >= 5
+            ):
+                cues.append(chunk)
+                chunk = []
+        if chunk:
+            cues.append(chunk)
+
+        result = []
+        for group in cues:
+            text = ''.join(w.word for w in group).strip()
+            if not text:
+                continue
+            result.append((
+                self._format_time(_eff_start(group[0]) + offset),
+                self._format_time(group[-1].end + offset),
+                text,
+            ))
+        return result or [(
+            self._format_time(segment.start + offset),
+            self._format_time(segment.end + offset),
+            segment.text.strip(),
+        )]
+
+    @staticmethod
+    def _ends_clause(word) -> bool:
+        """Từ này kết thúc mệnh đề chưa — dùng làm mốc cắt cue."""
+        text = (word.word or '').strip()
+        return bool(text) and text[-1] in '。？！!?、,.．,.'
 
     def _format_time(self, seconds):
         """Chuyen giay thanh dinh dang SRT: HH:MM:SS,mmm"""
@@ -449,7 +517,7 @@ class WhisperTranscriber:
             'ア', 'イ', 'ウ', 'エ', 'オ',
             'カ', 'キ', 'ク', 'ケ', 'コ',
             # Ky tu Latin don le (thuong la loi nhan dien)
-            'h', 'mm', 'hm', 'uh', 'ah', 'oh', 'um', 'er',
+            'h', 'hm', 'um', 'er',
             'mmm', 'hhh', 'uhh', 'ahh', 'ohh',
             # Symbol rác
             '💓', '💔', '💕', '💖', '💗', '💘', '💙', '💚',
@@ -464,7 +532,7 @@ class WhisperTranscriber:
 
         # 5. Lap lai cum 2-3 ky tu nhieu lan (thuong la loi nhan dien)
         # vd: "アアホアアホ" hoặc "yeah yeah yeah"
-        repeat_pattern = re.match(r'^(.{1,3})(\s*\1){2,}$', text, re.IGNORECASE)
+        repeat_pattern = re.match(r'^(.{2,3})(\s*\1){2,}$', text, re.IGNORECASE)
         if repeat_pattern:
             return True
 
@@ -491,9 +559,6 @@ class WhisperTranscriber:
                               'マ', 'ミ', 'ム', 'メ', 'モ', 'ヤ', 'ユ', 'ヨ', 'ラ', 'リ',
                               'ル', 'レ', 'ロ', 'ワ', 'ヲ', 'ン'}
             if text in single_katakana:
-                return True
-            # 2-3 katakana lap lai (thuong la loi nhan dien)
-            if len(text) <= 3:
                 return True
 
         # 9. Tieng Viet nhung khong co nguyen am dung (thuong la loi)

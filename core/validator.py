@@ -54,6 +54,17 @@ class Validator:
             # Cảnh báo chính tả tiếng Việt (không reject, chỉ warn)
             if trans:
                 self._check_vietnamese_typos(orig, trans)
+                # Ký tự Nhật/Cyrillic lọt vào bản dịch = LLM không dịch được
+                # (VD: "Nó cứ lừ đừ不出来 mà", "Vậy thì chỉ一杯 thôi").
+                # Reject để retry bằng prompt khác. Chuẩn phụ đề Việt chỉ dùng
+                # Latin, giữ ký tự Nhật kèm nghĩa ("Miho (美穂)") cũng là lỗi.
+                leaked = self._detect_script_leak(trans)
+                if leaked:
+                    logger.error(
+                        "Translation contains untranslated %s characters: %r",
+                        leaked, trans[:60],
+                    )
+                    return False
 
         # Check tính nhất quán của tên nhân vật
         if not self._check_character_name_consistency(translations):
@@ -65,10 +76,31 @@ class Validator:
 
         return True
 
+    @staticmethod
+    def _detect_script_leak(trans: str) -> str:
+        """Phát hiện ký tự nước ngoài còn sót trong bản dịch Việt.
+
+        Chuẩn phụ đề Việt chỉ dùng Latin + dấu, nên bất kỳ Kana/CJK/Hangul/
+        Cyrillic nào còn lại đều là LLM bỏ sót (VD "Nó cứ lừ đừ不出来 mà").
+        Trả về tên script bị lọt, hoặc chuỗi rỗng nếu sạch.
+        """
+        for name, pattern in (
+            ('Kana', r'[\u3040-\u30ff]'),
+            ('CJK', r'[\u4e00-\u9fff]'),
+            ('Hangul', r'[\uac00-\ud7af]'),
+            ('Cyrillic', r'[\u0400-\u04ff]'),
+        ):
+            if re.search(pattern, trans):
+                return name
+        return ''
+
     def _check_vietnamese_typos(self, orig: str, trans: str):
         """Cảnh báo các lỗi chính tả tiếng Việt phổ biến khi dịch Nhật-Việt."""
-        # Lỗi "vâng" thay vì "hai" (model hay viết sai khi gặp số 2)
-        if 'vâng' in trans.lower():
+        # Lỗi "vâng" thay vì "hai" (model hay viết sai khi gặp số 2).
+        # Dùng chung regex với post_processor: chỉ match "vâng + <counter>".
+        # Substring check warn nhầm mỗi lần gặp "Vâng" (lời lạm) — false positive.
+        from .post_processor import _VANG_RE
+        if _VANG_RE.search(trans):
             logger.warning(f"VN typo: 'vâng' (should be 'hai') in: {trans[:60]}")
         # Lỗi giữ romaji chưa dịch (Whisper artifacts)
         romaji_artifacts = ['Garam tsuite', 'an ketsu', 'Vagina', 'Anus',

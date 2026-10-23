@@ -109,9 +109,12 @@ def _normalize_whisper_text(text: str) -> str:
     if has_kanji or len(text_clean) > 6:
         return text.strip()
 
-    result = text
+    result = text.strip()
     for pattern, replacement in _WHISPER_KANA_FIXES:
-        result = re.sub(pattern, replacement, result)
+        m = re.match(r'^(?:' + pattern + r')([。.,!?！？…~～ー\s]*)$', result)
+        if m:
+            result = replacement + (m.group(1) or '')
+            break
 
     # Collapse multiple spaces
     result = re.sub(r'\s+', ' ', result).strip()

@@ -291,6 +291,38 @@ Particles: ね=nhỉ, よ=nhấn mạnh, わ=sự ngạc nhiên, ぞ=cảnh báo
 Onomatopoeia: きらきら→lấp lánh, わくわく→hào hứng, ドキドキ→đập thình thịch.
 Common mistakes to avoid: 勉強=học (not "cố gắng"), 汽車=xe lửa, 階段=cầu thang."""
 
+# Compact uncen variant cho LITERAL pass.
+# Vì sao cần riêng: PROMPTS['vi'] trong pipeline có đầy rule uncen, nhưng source JA
+# đi qua ja_translator nên KHÔNG dùng PROMPTS['vi'] → rule uncen đó là code chết.
+# Với uncen mode + literal_mode (1-pass), _LITERAL_SYSTEM_COMPACT là prompt DUY NHẤT
+# model thấy, mà nó không có rule uncen nào → model tự dịch "bạn tình/lịch sự".
+_LITERAL_SYSTEM_COMPACT_UNCEN = """\
+You are a professional Japanese-to-Vietnamese subtitle translator for adult (18+) films.
+
+ABSOLUTE RULES (never break):
+- Output ONLY Vietnamese text, never Japanese.
+- Never output Japanese characters (あ-ん ア-ン 一-龯).
+- Output format: numbered list, one translation per line:
+1. Vietnamese translation
+2. Vietnamese translation
+
+UNCEN MODE (adult content — translate literally, do NOT sanitize):
+- Use explicit Vietnamese words for sexual content. NEVER substitute polite/soft
+  euphemisms: no "bạn tình" (use "người tình"), no "quan hệ" alone for sex
+  (use "quan hệ tình dục"), no "gần gũi" (use "quan hệ tình dục"),
+  no "dễ chịu"/"thoải mái" (use "sướng"), no "lên đỉnh" (use "ra"),
+  no "phóng thích" (use "xuất tinh"), no "cương" alone (use "cương cứng"),
+  no "mở miệng" for oral (use "hút dương vật").
+- 気持ちいい→sướng quá, いく→ra, セックス→quan hệ tình dục, 中出し→xuất tinh trong,
+  孕む/妊娠→mang thai, 犯す→cưỡng ép/hiếp, 喘ぐ→rên rỉ, 射精→xuất tinh,
+  勃起→cương cứng, 挿入→chèn vào, フェラ→hút dương vật.
+- Keep rough/直接的 tone of original dialogue. Do not add politeness or euphemism.
+- MANDATORY GLOSSARY entries below are ABSOLUTE RULES — use the exact target word.
+
+Keigo: です/ます → "anh/chị"; だ/する → "tớ/cậu".
+Particles: ね=nhỉ, よ=nhấn mạnh, わ=sự ngạc nhiên, ぞ=cảnh báo.
+Onomatopoeia: きらきら→lấp lánh, わくわく→hào hứng, ドキドキ→đập thình thịch."""
+
 
 def _get_system_prompt(mode: str = "default") -> str:
     """Trả về system prompt theo mode.
@@ -305,7 +337,14 @@ def _get_system_prompt(mode: str = "default") -> str:
 
 def _get_literal_system_prompt(mode: str = "default") -> str:
     """Compact system prompt cho LITERAL pass — giảm prompt length ~85% để LLM 8B
-    ổn định hơn. Giữ đủ keigo + uncen essentials, chi tiết cho polish pass."""
+    ổn định hơn. Giữ đủ keigo + uncen essentials, chi tiết cho polish pass.
+
+    Với mode uncen, dùng bản có rule uncen tường minh — nếu không, model 8B
+    tự dịch "bạn tình" thay vì "người tình" (đây là prompt DUY NHẤT model
+    thấy khi literal_mode bật, vì PROMPTS['vi'] không được dùng cho source JA).
+    """
+    if (mode or "").lower() == "uncen":
+        return _LITERAL_SYSTEM_COMPACT_UNCEN
     return _LITERAL_SYSTEM_COMPACT
 
 
@@ -347,6 +386,15 @@ def _is_likely_japanese_translation(text: str) -> bool:
 _MARKDOWN_BOLD_RE = re.compile(r"\*{1,3}([^*]+)\*{1,3}")
 _LEADING_ARROW_RE = re.compile(r"^[→\-\*\u2022]\s*")
 
+# shortcut: ký tự lạ model 8B hay lỡ tay đổi khi dịch từ Nhật — model đổi sang
+# bảng mã lân cận (Thái/Han tự) thay vì giữ nguyên ký tự Nhật, nên regex "có ký
+# tự Nhật" không bắt được. Đo ở JUL-409: "giống nhauเลย", "xấu ý too",
+# "từ giờ开始", "Đúng rồi呢" (JUL-837) — 4/454 dòng.
+# Thái: bất kỳ vị trí (tiếng Việt không bao giờ chứa chữ Thái).
+# Han: chỉ đuôi câu — giữ phần đầu vì tên riêng Hán (龍介, 陳) là hợp lệ.
+_THAI_RE = re.compile(r"[\u0e00-\u0e7f]")
+_JUNK_TAIL_RE = re.compile(r"(?:[\u4e00-\u9fff]|too|도|に){1,4}$", re.IGNORECASE)
+
 
 def _strip_leading_number(line: str) -> str:
     return _LEADING_NUM_RE.sub("", line).strip()
@@ -355,11 +403,22 @@ def _strip_leading_number(line: str) -> str:
 def _clean_markdown(line: str) -> str:
     """Strip markdown bold, leading arrows, giữ text thuần. Áp dụng cho mọi
     LLM output trước khi xuất ra SRT — tránh bug **xxx**, → xxx leak.
+
+    Thêm: dọn 3 dạng leak model 8B hay trả (đo ở JUL-409: 8/255 dòng bẩn):
+    - "JA -> VN": LLM lặp cả cặp so sánh → chỉ giữ phần sau mũi tên.
+    - Ký tự lạ lõm vào đuôi (เลย/too/开始): model đổi ký tự cuối sang
+      bảng mã Thái/Han. Regex \w không bắt vì chúng không thuộc \w.
     """
     if not line:
         return line
     cleaned = _MARKDOWN_BOLD_RE.sub(r"\1", line)
     cleaned = _LEADING_ARROW_RE.sub("", cleaned)
+    # "JA -> VN": giữ phần sau mũi tên cuối (bản dịch luôn nằm sau)
+    for sep in (' → ', ' -> ', '⇒', '=>'):
+        if sep in cleaned:
+            cleaned = cleaned.rsplit(sep, 1)[1].strip()
+    cleaned = _THAI_RE.sub("", cleaned)
+    cleaned = _JUNK_TAIL_RE.sub("", cleaned)
     return cleaned.strip()
 
 

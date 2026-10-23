@@ -1,0 +1,65 @@
+# glossary_NSPS-692.yaml
+# Riêng cho phim NSPS-692. Ghi đè glossary_common/glossary_uncen nếu trùng source_term.
+#
+# Vấn đề đã gặp ở lần dịch đầu: tên 美穂 bị dịch ra 5 kiểu khác nhau
+# (ho / Miho / Mihō / Misato) và 強氏 bị dịch thành "ông mạnh".
+#
+# Schema: source_term / target_term / context_hint
+
+- source_term: 美穂
+  target_term: Miho
+  context_hint: TÊN nữ chính, LUÔN viết "Miho", KHÔNG dấu gạch dài (Mihō), KHÔNG bỏ chữ "Mi" thành "ho"
+- source_term: ミホ
+  target_term: Miho
+  context_hint: TÊN nữ chính (katakana), LUÔN "Miho"
+- source_term: みほ
+  target_term: Miho
+  context_hint: TÊN nữ chính (hiragana), LUÔN "Miho"
+- source_term: 強
+  target_term: ông Tsuyoshi
+  context_hint: TÊN riêng người đàn ông lớn tuổi. LUÔN "ông Tsuyoshi", KHÔNG dịch nghĩa đen thành "ông mạnh"
+- source_term: 強氏
+  target_term: ông Tsuyoshi
+  context_hint: TÊN riêng có kính ngữ, LUÔN "ông Tsuyoshi"
+- source_term: ゆう
+  target_term: Yuu
+  context_hint: TÊN em trai, LUÔN "Yuu"
+- source_term: 弟の嫁
+  target_term: em dâu
+  context_hint: quan hệ - em dâu của em trai (vợ của ゆう)
+- source_term: 旦那さん
+  target_term: chồng
+  context_hint: KHÔNG dịch "ông tự", giữ "chồng"
+- source_term: 夫妻
+  target_term: vợ chồng
+  context_hint: vợ chồng
+- source_term: 夫婦の営み
+  target_term: quan hệ tình dục của vợ chồng
+  context_hint: cụm nhạy cảm, dịch đúng nghĩa quan hệ vợ chồng
+- source_term: 営み
+  target_term: quan hệ tình dục
+  context_hint: ngữ cảnh JAV = quan hệ tình dục, KHÔNG dịch "sự nghiệp"
+- source_term: 性欲
+  target_term: ham muốn tình dục
+  context_hint: ham muốn tình dục, dùng từ lịch sự
+- source_term: 出る
+  target_term: xuất tinh
+  context_hint: ngữ cảnh tình dục = xuất tinh ra ngoài
+- source_term: 脱ぐ
+  target_term: cởi đồ
+  context_hint: ngữ cảnh tình dục
+- source_term: 脱がせる
+  target_term: cởi đồ cho
+  context_hint: chủ động cởi đồ cho
+- source_term: できる
+  target_term: quan hệ tình dục
+  context_hint: '"彼とできる" = đã quan hệ tình dục với hắn, KHÔNG dịch "làm được"'
+- source_term: をしてる
+  target_term: đang quan hệ tình dục
+  context_hint: ngữ cảnh tình dục
+- source_term: 強氏には黙っててやる
+  target_term: cứ im lặng với ông Tsuyoshi
+  context_hint: 'giữ tên riêng đúng dạng "ông Tsuyoshi"'
+- source_term: リストア
+  target_term: layoffs
+  context_hint: 'từ mượn tiếng Anh về sa thải nhân sự, giữ nguyên "layoffs"'

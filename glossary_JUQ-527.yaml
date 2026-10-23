@@ -1,0 +1,26 @@
+# glossary_JUQ-527.yaml
+# Riêng cho phim JUQ-527. Term ghi đè glossary_common/glossary_uncen nếu cùng
+# source_term nhưng nghĩa ở phim này khác.
+#
+# Pattern file:  glossary_<project_name>.yaml
+# project_name lấy từ config.yaml['project']['name'] (ký tự không phải
+# [A-Za-z0-9_-] sẽ được thay bằng '_').
+
+- source_term: レノさん
+  target_term: Reno-san
+  context_hint: NHÂN VẬT CHÍNH NỮ, dâu nhà Đại Đảo, LUÔN "Reno-san"
+- source_term: レノ
+  target_term: Reno
+  context_hint: tên thân mật (không kèm -san), LUÔN "Reno", KHÔNG "Leno/Ren-o/Renou"
+- source_term: マコト
+  target_term: Makoto
+  context_hint: chồng, LUÔN "Makoto", KHÔNG "Mako"
+- source_term: 清美
+  target_term: Kiyomi
+  context_hint: tên nữ, LUÔN "Kiyomi"
+- source_term: 大島
+  target_term: Đại Đảo
+  context_hint: họ chồng, BẮT BUỘC dịch sang Việt, KHÔNG "đại島"
+- source_term: 栃木
+  target_term: Tochigi
+  context_hint: Whisper hay nghe sai, dùng cho tỉnh, KHÔNG "công ty con"

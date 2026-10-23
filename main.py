@@ -890,8 +890,12 @@ def _clear_project_db(project_id: int, db, clear_files=False, output_srt=None, d
     print(f"  {STATUS_ICONS['success']} Da clear DB: windows, contexts, dead letters, subtitles")
 
 
-def run_translation(config):
-    """Chay qua trinh dich."""
+def run_translation(config, non_interactive: bool = False):
+    """Chay qua trinh dich.
+
+    non_interactive=True khi chay tu GUI (stdin khong co nguoi dung):
+    moi diem hoi input() se co dap an mac dinh thay vi treo/EOFError.
+    """
     errors = validate_config(config)
     if errors:
         console.print(f"\n{STATUS_ICONS['error']} [red]Cau hinh chua day du:[/red]")
@@ -907,6 +911,9 @@ def run_translation(config):
     else:
         console.print(f"{STATUS_ICONS['error']} [red]Ollama loi:[/red] {ollama_msg}")
         console.print(f"{STATUS_ICONS['warning']} [yellow]Vui long bat Ollama truoc:[/yellow] ollama serve")
+        if non_interactive:
+            console.print(f"{STATUS_ICONS['error']} [red]Thoat (che do non-interactive).[/red]")
+            return
         resp = input("Thu lai? (y/n): ").strip().lower()
         if resp == 'y':
             # Thu lai
@@ -1021,7 +1028,9 @@ def run_translation(config):
 
         if proj:
             if proj['status'] in ('completed', 'completed_with_errors'):
-                resp = input("Project da hoan thanh truong do. Chay lai? (y/n): ").strip().lower()
+                # GUI khong co stdin de hoi -> xem nhu user da duyet chay lai.
+                resp = 'y' if non_interactive else input(
+                    "Project da hoan thanh truong do. Chay lai? (y/n): ").strip().lower()
                 if resp not in ('y', 'yes'):
                     console.print(f"{STATUS_ICONS['warning']} [yellow]Da huy.[/yellow]")
                     return
@@ -1055,12 +1064,19 @@ def run_translation(config):
         console.print(f"{STATUS_ICONS['success']} [green]Da tao project moi:[/green] ID={project_id}")
 
         if 'glossary' in config:
+            # Dùng _normalize_glossary_entry để nhận cả schema cũ
+            # (source/target/context) lẫn mới (source_term/target_term/context_hint).
+            # Trước đây dùng term['source'] → KeyError nếu config dùng schema mới.
+            from core.pipeline import _normalize_glossary_entry
             for term in config['glossary']:
+                norm = _normalize_glossary_entry(term)
+                if not norm:
+                    continue
                 db.add_glossary_term(
                     project_id,
-                    term['source'],
-                    term['target'],
-                    term.get('context', '')
+                    norm['source_term'],
+                    norm['target_term'],
+                    norm['context_hint']
                 )
 
     # PRE-CHECK + AUTO-FIX: Phát hiện và tự động sửa lỗi Whisper trước khi dịch
@@ -1324,6 +1340,8 @@ def fix_srt_with_rules(input_path: str, output_path: str = None):
 
     for b in blocks:
         new_text, violations = processor.process_translation(b['text'])
+        from core.post_processor import RuleBasedPostProcessor
+        new_text = RuleBasedPostProcessor().process_line(new_text)
         if new_text != b['text']:
             b['text'] = new_text
             fixed_count += 1
@@ -1397,6 +1415,8 @@ def main():
     parser.add_argument('--mode', '-m', help='Translation mode (default, uncen)')
     parser.add_argument('--interactive', '-I', action='store_true', help='Interactive mode')
     parser.add_argument('--config', '-c', default='config.yaml', help='Config file path')
+    parser.add_argument('--non-interactive', action='store_true',
+                        help='Khong hoi input() (dung khi chay tu GUI, stdin khong co nguoi dung)')
 
     args = parser.parse_args()
 
@@ -1432,7 +1452,7 @@ def main():
         if args.input:
             _auto_setup_project_paths(config, args.input)
             config = load_config()  # reload sau save
-        run_translation(config)
+        run_translation(config, non_interactive=args.non_interactive)
     else:
         interactive_mode(config)
 

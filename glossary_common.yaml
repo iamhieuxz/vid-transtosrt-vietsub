@@ -1,0 +1,67 @@
+# glossary_common.yaml
+# Term dùng được ở NHIỀU phim (thán từ, danh xưng, từ khóa chung).
+# Pipeline LUÔN load file này, ưu tiên thấp hơn glossary_<film>.yaml và
+# glossary_uncen.yaml.
+#
+# Schema: source_term / target_term / context_hint
+# Ghi chú: context_hint ngắn. Comment đầy đủ ở 1 dòng đầu file.
+#
+# NGUYÊN TẮC: chỉ thêm term khi bạn ĐÃ thấy nó sai trong bản dịch.
+# Term chưa kiểm chứng chỉ làm tốn prompt và gây ép sai.
+# - Target đa nghĩa: viết bằng CÂU, KHÔNG dùng "a / b / c" (LLM sẽ sinh ra
+#   nhiều dòng cho 1 dòng input → lệch mapping cả window).
+
+- source_term: ほら
+  target_term: Nhìn này
+  context_hint: NHẤT QUÁN, KHÔNG đổi sang "Thấy chưa"
+- source_term: ほれ
+  target_term: Thấy chưa
+  context_hint: giọng nam, vẫy mời
+- source_term: ああ
+  target_term: À ừ
+  context_hint: gật đầu đồng ý, viết LIỀN "À ừ"
+- source_term: まあ
+  target_term: Cũng được mà
+  context_hint: linh hoạt, cùng chức năng
+- source_term: よし
+  target_term: Được rồi
+  context_hint: quyết tâm, KHÔNG dùng "Vâng/Đúng rồi"
+- source_term: ん?
+  target_term: '''tùy ngữ cảnh: ngạc nhiên thì "Hả?", đang mắng/gắt thì "Đúng rồi?"'''
+  context_hint: chọn đúng 1 nghĩa, KHÔNG ghi cả 2 vào cùng dòng
+- source_term: え?
+  target_term: '''tùy ngữ cảnh: ngạc nhiên thì "Hả?", đang mắng/gắt thì "Đúng rồi?"'''
+  context_hint: chọn đúng 1 nghĩa, KHÔNG ghi cả 2 vào cùng dòng
+- source_term: そう
+  target_term: '''tùy ngữ cảnh: đồng ý thì "ừ/đúng rồi", đứng sau danh từ thì "trông như"'''
+  context_hint: chọn đúng 1 nghĩa, KHÔNG ghi cả 2 vào cùng dòng
+- source_term: そうか
+  target_term: À, vậy à
+  context_hint: ngạc nhiên nhẹ
+- source_term: 5日間
+  target_term: 5 ngày
+  context_hint: NHẤT QUÁN, KHÔNG "Trong 5 ngày"
+- source_term: 裏切る
+  target_term: phản bội
+  context_hint: 裏切った = đã phản bội
+- source_term: 一部
+  target_term: một phần
+  context_hint: của một phần, KHÔNG phải "chỉ đạo"
+- source_term: 指示
+  target_term: hướng dẫn
+  context_hint: dạng danh từ, KHÔNG phải mệnh lệnh
+- source_term: 私的な
+  target_term: riêng tư
+  context_hint: tính từ, cá nhân
+- source_term: 彼氏
+  target_term: bạn trai
+  context_hint: LUÔN là "bạn trai" (người yêu nam), KHÔNG dịch "anh trai"
+- source_term: お水
+  target_term: nước uống
+  context_hint: nước lọc/ly nước, KHÔNG dịch "nước tiểu"
+- source_term: 婚約
+  target_term: đính hôn
+  context_hint: lễ đính hôn / hứa hôn
+- source_term: 婚約者
+  target_term: vị hôn phu
+  context_hint: người đã đính hôn

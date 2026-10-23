@@ -1,0 +1,284 @@
+# glossary_uncen.yaml
+# Tu TINH DUC — chi nap khi config.translation.mode = "uncen".
+# Day la LUAT: LLM phai dung dung target, KHONG tu doi sang tu Han Viet lich su.
+#
+# Nguyen tac viet target:
+# - NGAN (1-3 tu). Target dai ("quan he tinh duc de co thai") LLM khong dung →
+#   do duoc 子作り chi khop 0/3 lan o JUR-776.
+# - KHONG chua dau ngoac/giai thich. Giai thich de trong context_hint.
+# - Nhieu tu Nhat cung 1 nghia → cung 1 target (dong nhat tu vung).
+# - KHONG them term qua rong (する, やる, 出す, 前に, 中に) — se ep sai nghia hang loat.
+# - Target da nghia: viet bang CAU, KHONG dung "a / b / c" (LLM se sinh ra
+#   nhieu dong cho 1 dong input → lech mapping ca window).
+# - Target cua tu lien quan tinh duc: GHI TU LICH SU o context_hint de LLM
+#   khong tu thay bang tu nhe/lich su (vi du: "bạn tình" → "người tình").
+#
+# Schema: source_term / target_term / context_hint
+
+- source_term: おちんちん
+  target_term: dương vật
+  context_hint: từ thân mật, KHÔNG dịch "cậu nhỏ"
+- source_term: ペニス
+  target_term: dương vật
+  context_hint: từ y khoa katakana, cùng nghĩa
+- source_term: ちんこ
+  target_term: dương vật
+  context_hint: từ thô, tiếng lóng, KHÔNG dịch "cậu nhỏ"
+- source_term: ちんぽ
+  target_term: dương vật
+  context_hint: biến thể của ちんこ, KHÔNG dịch "cậu nhỏ"
+- source_term: 亀頭
+  target_term: đầu dương vật
+  context_hint: ''
+- source_term: 生殖器
+  target_term: bộ phận sinh dục
+  context_hint: nếu là dương vật thì dùng "dương vật", tránh y khoa cứng
+- source_term: 膣
+  target_term: âm đạo
+  context_hint: ''
+- source_term: 膣内
+  target_term: bên trong âm đạo
+  context_hint: KHÔNG giảm nhẹ
+- source_term: 阴道
+  target_term: âm đạo
+  context_hint: ''
+- source_term: まんこ
+  target_term: âm đạo
+  context_hint: từ thô chỉ âm đạo, KHÔNG né tránh
+- source_term: おまんこ
+  target_term: âm đạo
+  context_hint: từ thân mật/thô chỉ âm đạo, KHÔNG né tránh
+- source_term: おっぱい
+  target_term: vú
+  context_hint: ngực phụ nữ trong ngữ cảnh tình dục
+- source_term: 乳首
+  target_term: núm vú
+  context_hint: đầu ngực
+- source_term: 精液
+  target_term: tinh dịch
+  context_hint: KHÔNG dùng "tinh trùng"
+- source_term: 射精
+  target_term: xuất tinh
+  context_hint: KHÔNG dịch "phóng thích" / "lên đỉnh"
+- source_term: 中出し
+  target_term: xuất tinh trong
+  context_hint: KHÔNG giảm nhẹ
+- source_term: 仲出し
+  target_term: xuất tinh trong
+  context_hint: Whisper hay viết nhầm 中出し thành 仲出し (đồng âm), dịch "xuất tinh trong"
+- source_term: 中に出す
+  target_term: xuất tinh bên trong
+  context_hint: xuất tinh vào bên trong, KHÔNG dịch "đưa ra trong"
+- source_term: 精液を出す
+  target_term: xuất tinh
+  context_hint: trong ngữ cảnh tình dục
+- source_term: 無断中出し
+  target_term: xuất tinh trong không xin phép
+  context_hint: tự ý xuất tinh trong
+- source_term: ゴム
+  target_term: bao cao su
+  context_hint: KHÔNG dịch "cao su"
+- source_term: 母乳
+  target_term: sữa mẹ
+  context_hint: tình dục - mút sữa
+- source_term: セックス
+  target_term: quan hệ tình dục
+  context_hint: KHÔNG dịch "gần gũi" / "yêu" / "tình yêu"
+- source_term: 肉体関係
+  target_term: quan hệ tình dục
+  context_hint: danh từ hóa, KHÔNG dịch "quan hệ thể xác"
+- source_term: 子作り
+  target_term: quan hệ tình dục
+  context_hint: chuyện sinh con, KHÔNG dịch "làm con" / "tạo con"
+- source_term: 孕む
+  target_term: mang thai
+  context_hint: KHÔNG dịch "có em bé" (né tránh)
+- source_term: 妊娠
+  target_term: mang thai
+  context_hint: ''
+- source_term: 犯す
+  target_term: cưỡng ép
+  context_hint: tùy ngữ cảnh có thể là "hiếp", KHÔNG che đậy
+- source_term: 強姦
+  target_term: hiếp
+  context_hint: ''
+- source_term: 輪姦
+  target_term: hiếp tập thể
+  context_hint: cưỡng bức tập thể, KHÔNG giảm nhẹ
+- source_term: フェラ
+  target_term: hút dương vật
+  context_hint: quan hệ bằng miệng, từ khiêu dâm
+- source_term: フェラチオ
+  target_term: hút dương vật
+  context_hint: quan hệ bằng miệng
+- source_term: クンニ
+  target_term: liếm âm đạo
+  context_hint: quan hệ bằng miệng cho nữ
+- source_term: パイズリ
+  target_term: kẹp dương vật bằng ngực
+  context_hint: hành động tình dục bằng ngực
+- source_term: 手コキ
+  target_term: kích thích dương vật bằng tay
+  context_hint: hành động tình dục bằng tay
+- source_term: オナニー
+  target_term: thủ dâm
+  context_hint: KHÔNG dịch "tự sướng"
+- source_term: 気持ちいい
+  target_term: sướng quá
+  context_hint: KHÔNG dịch "dễ chịu" / "thoải mái" / "cảm giác tốt"
+- source_term: 気持ち良い
+  target_term: sướng quá
+  context_hint: biến thể kanji của 気持ちいい, KHÔNG dịch "dễ chịu" / "cảm giác tốt"
+- source_term: 気持ち良
+  target_term: sướng
+  context_hint: 'dạng rút gọn trong "気持ち良くなさそうな" (đo ở JUL-409 #143), dùng "sướng" ngắn'
+- source_term: 気持ち良かった
+  target_term: sướng lắm
+  context_hint: quá khứ của 気持ち良い, KHÔNG dịch "cảm giác tuyệt vời" / "dễ chịu"
+- source_term: 気持ちよかった
+  target_term: sướng lắm
+  context_hint: quá khứ của 気持ちいい, KHÔNG dịch "cảm giác tuyệt vời" / "dễ chịu"
+- source_term: 性処理
+  target_term: giải tỏa sinh lý
+  context_hint: phục vụ nhu cầu tình dục, KHÔNG dịch "xử lý tình dục"
+- source_term: 気持ちよさそう
+  target_term: có vẻ sướng
+  context_hint: dạng "-そう" của 気持ちいい
+- source_term: 気持ちよさそうな
+  target_term: có vẻ sướng
+  context_hint: dạng "-そうな" của 気持ちいい
+- source_term: 快感
+  target_term: khoái cảm
+  context_hint: KHÔNG dịch "niềm vui"
+- source_term: 勃起
+  target_term: cương cứng
+  context_hint: KHÔNG dịch "hưng phấn"
+- source_term: 濡れる
+  target_term: ướt
+  context_hint: cơ thể, KHÔNG dịch "mưa"
+- source_term: 湿った
+  target_term: ướt
+  context_hint: ''
+- source_term: 喘ぐ
+  target_term: rên rỉ
+  context_hint: KHÔNG dịch "thở" / "thở dài"
+- source_term: 喘ぎ
+  target_term: rên rỉ
+  context_hint: KHÔNG dịch "thở" / "thở dài"
+- source_term: 主人
+  target_term: chồng
+  context_hint: LUÔN "chồng" trong JAV, KHÔNG BAO GIỜ "chủ nhân" (master/lord)
+- source_term: 旦那
+  target_term: chồng
+  context_hint: ''
+- source_term: 妻
+  target_term: vợ
+  context_hint: ''
+- source_term: セフレ
+  target_term: người tình
+  context_hint: 'NGHĨA: sex-friend (quan hệ tình dục không chính thức). BẮT BUỘC dùng "người tình", KHÔNG dịch "bạn tình"/"bạn trai"/"người yêu". KHÔNG để nguyên "sefre"'
+- source_term: セックスフレンド
+  target_term: người tình
+  context_hint: viết tắt của セフレ, cùng target, KHÔNG dịch "bạn tình"
+- source_term: 義理
+  target_term: trên danh nghĩa
+  context_hint: quan hệ trên danh nghĩa (vợ trên danh nghĩa, mẹ chồng, anh rể), KHÔNG phải "nghĩa lý"/"nghĩa tình"
+- source_term: 浮気
+  target_term: ngoại tình
+  context_hint: LUÔN "ngoại tình", KHÔNG dịch "lừa đảo"/"phản bội"
+- source_term: 不倫
+  target_term: ngoại tình
+  context_hint: LUÔN "ngoại tình", KHÔNG dịch "vô đạo đức"
+- source_term: 愛人
+  target_term: người tình
+  context_hint: tương đương セフレ trong ngữ cảnh ngoại tình, KHÔNG dịch "bạn tình"
+- source_term: 寝取られ
+  target_term: bị cướp vợ
+  context_hint: ngoại tình/cướp vợ
+- source_term: 異性
+  target_term: khác giới
+  context_hint: ''
+- source_term: 抱く
+  target_term: ôm
+  context_hint: 抱きたい女 = muốn ôm cô ấy
+- source_term: 抱きしめる
+  target_term: ôm chặt
+  context_hint: ''
+- source_term: 触る
+  target_term: sờ
+  context_hint: cơ thể, trong ngữ cảnh tình dục dùng "sờ", KHÔNG dịch "chạm" (nhạt)
+- source_term: タッチ
+  target_term: sờ
+  context_hint: cơ thể, KHÔNG dịch "tiếp xúc" (cứng)
+- source_term: ばらす
+  target_term: vạch trần
+  context_hint: バラす = expose/để lộ
+- source_term: イク
+  target_term: ra
+  context_hint: đạt cực khoái, KHÔNG dịch "đi" (nghe như đi bộ)
+- source_term: 逝く
+  target_term: ra
+  context_hint: 逝く = イク (đạt cực khoái), KHÔNG dịch "đi"
+- source_term: 挿入
+  target_term: đút vào
+  context_hint: KHÔNG dịch "đưa vào" (nhạt)
+- source_term: 濡らした
+  target_term: ướt
+  context_hint: cơ thể
+- source_term: 潮
+  target_term: dịch âm đạo
+  context_hint: nước tiết dịch âm đạo khi lên đỉnh
+- source_term: 咥える
+  target_term: ngậm
+  context_hint: ngậm bằng miệng, KHÔNG dịch "cắn"
+- source_term: 舐める
+  target_term: liếm
+  context_hint: cơ thể
+- source_term: 流される
+  target_term: bị cuốn theo
+  context_hint: bị cuốn theo dòng chảy/tình cảm, KHÔNG dịch "bị kéo" (vô nghĩa), KHÔNG dịch "trôi"
+- source_term: 流されてみろよ
+  target_term: cứ bị cuốn đi
+  context_hint: câu khiêu khích, tường minh
+- source_term: 流れに身を任せて
+  target_term: cứ đi theo dòng chảy
+  context_hint: chấp nhận bị cuốn theo dòng chảy
+- source_term: 友達セフレ
+  target_term: người tình
+  context_hint: '"bạn tình" trong câu hỏi = người tình (đo ở JUL-837 #62)'
+- source_term: セフレいた
+  target_term: có người tình
+  context_hint: dạng động từ của セフレ
+- source_term: セフレ連れ込んでる
+  target_term: mang người tình về nhà
+  context_hint: hành động tình dục
+- source_term: 抱きたい
+  target_term: muốn ôm
+  context_hint: muốn ôm cô ấy, KHÔNG dịch "muốn giữ"
+- source_term: 弄ぶ
+  target_term: đùa bỡn
+  context_hint: trêu đùa thân xác, KHÔNG dịch "làm rối"
+- source_term: 入れる
+  target_term: cho vào
+  context_hint: đưa vào cơ thể trong ngữ cảnh tình dục
+- source_term: 入れてる
+  target_term: cho vào rồi
+  context_hint: '"đã cho vào chưa" (đo ở JUL-409 #231)'
+- source_term: 満たす
+  target_term: lấp đầy
+  context_hint: hành động tình dục
+- source_term: 搾り取る
+  target_term: vắt kiệt
+  context_hint: vắt kiệt tinh dịch, KHÔNG dịch "bóp"
+- source_term: missionary
+  target_term: tư thế truyền thống
+  context_hint: tư thế tình dục
+- source_term: バック
+  target_term: tư thế từ phía sau
+  context_hint: tư thế tình dục từ phía sau, KHÔNG dịch "lùi" hay "hậu môn"
+- source_term: 後ろから
+  target_term: từ phía sau
+  context_hint: chỉ huy tư thế tình dục, KHÔNG dịch "từ sau lưng" (nghe vô nghĩa)
+- source_term: 膝
+  target_term: đầu gối
+  context_hint: cơ thể

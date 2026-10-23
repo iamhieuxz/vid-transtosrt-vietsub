@@ -12,9 +12,10 @@ venv/
 env/
 ENV/
 
-# IDE
+# IDE & Agent local configs
 .vscode/
 .idea/
+.cursor/
 *.swp
 *.swo
 
@@ -23,14 +24,22 @@ ENV/
 Thumbs.db
 desktop.ini
 
-# Project artifacts
+# Project runtime databases & logs
 translation.db
-translation.db-journal
-translation.db-wal
-translation.db-shm
+translation.db*
 subtitle_translator.log
+.whisper_cache.json
+*.timestamp_review.txt
 *.tmp
 *.bak
+
+# Per-project temporary learned glossary files (keep global glossary_learned.yaml tracked)
+glossary_*.learned.yaml
+
+# Temporary test outputs
+_test*
+test-e2e*/
+test-dbg*/
 
 # Whisper model cache (downloaded on first run)
 models/
