@@ -269,6 +269,11 @@ class TranslationPipeline:
         self.llama_server = get_manager(config)
         # Chi bat GGUF khi model dang dung that su tro vao server nay (backend Ollama thi khong).
         if self.llama_server.manages_url(config['model'].get('ollama_url', '')):
+            if self.llama_server.alias and config['model'].get('name') != self.llama_server.alias:
+                logger.info(
+                    f"[LLAMA] Dong bo ten model '{config['model'].get('name')}' -> alias '{self.llama_server.alias}'"
+                )
+                config['model']['name'] = self.llama_server.alias
             self.llama_server.ensure_running()
         self.db = Database()
         num_predict = config['model'].get('num_predict', 1024)
@@ -398,8 +403,38 @@ class TranslationPipeline:
                 terms.append(norm)
         return terms
 
+    def clear_vram(self):
+        """Giải phóng hoàn toàn VRAM của LLM (llama-server hoặc Ollama) và bộ nhớ đệm CUDA."""
+        try:
+            if hasattr(self, 'translator') and self.translator is not None:
+                self.translator.unload_model()
+        except Exception as e:
+            logger.debug(f"Translator unload_model warning: {e}")
+        try:
+            if hasattr(self, 'llama_server') and self.llama_server is not None:
+                if self.llama_server.enabled and self.llama_server.auto_stop:
+                    self.llama_server.stop(reason='pipeline ket thuc - tu dong clear VRAM')
+        except Exception as e:
+            logger.debug(f"LlamaServer stop warning: {e}")
+        try:
+            import gc
+            gc.collect()
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
+        except Exception:
+            pass
+
     def run(self, project_id: int):
         """Run the full translation pipeline for a project."""
+        try:
+            self._run_impl(project_id)
+        finally:
+            self.clear_vram()
+
+    def _run_impl(self, project_id: int):
+        """Internal implementation of the translation pipeline."""
         project = self.db.get_project(project_id)
         if not project:
             logger.error(f"{STATUS_ICONS['error']} Project {project_id} not found")

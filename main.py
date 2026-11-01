@@ -35,7 +35,8 @@ STATUS_ICONS = {
     'warning': '[!]',
     'complete': '[OK]',
     'pending': '[...]',
-    'processing': '[>>]'
+    'processing': '[>>]',
+    'info': '[i]',
 }
 
 LANGUAGES = {
@@ -901,8 +902,52 @@ def _clear_project_db(project_id: int, db, clear_files=False, output_srt=None, d
     print(f"  {STATUS_ICONS['success']} Da clear DB: windows, contexts, dead letters, subtitles")
 
 
+def _free_all_llm_vram(config: dict, server_mgr=None, reason: str = "free VRAM"):
+    """Giải phóng hoàn toàn VRAM của LLM (llama-server + Ollama + CUDA cache)."""
+    try:
+        mgr = server_mgr or get_manager(config)
+        if mgr and mgr.enabled:
+            if reason == "free VRAM":
+                mgr.free_vram()
+            else:
+                mgr.stop(reason=reason)
+    except Exception as e:
+        logger.debug(f"[VRAM] llama_server free_vram warning: {e}")
+
+    # Nếu có model đang nạp trong Ollama (localhost:11434), gửi keep_alive=0 để unload khỏi VRAM
+    try:
+        import requests as _req
+        model_cfg = (config or {}).get('model') or {}
+        ollama_url = str(model_cfg.get('ollama_url', 'http://localhost:11434'))
+        if '/v1' not in ollama_url:
+            base_url = (ollama_url.replace('/api/generate', '').replace('/api/chat', '').rstrip('/'))
+            ps_resp = _req.get(f"{base_url}/api/ps", timeout=2)
+            if ps_resp.status_code == 200:
+                for m in ps_resp.json().get('models', []):
+                    m_name = m.get('name') or m.get('model')
+                    if m_name:
+                        _req.post(
+                            f"{base_url}/api/generate",
+                            json={"model": m_name, "keep_alive": 0},
+                            timeout=5,
+                        )
+    except Exception:
+        pass
+
+    try:
+        import gc
+        gc.collect()
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+    except Exception:
+        pass
+
+
 def run_translation(config, non_interactive: bool = False):
-    """Chay qua trinh dich.
+    """Chay qua trinh dich theo thu tu toi uu VRAM:
+    Whisper (Tach am + ASR) -> Clear VRAM Whisper -> Bat LLM -> Dich -> Tu dong Clear VRAM LLM.
 
     non_interactive=True khi chay tu GUI (stdin khong co nguoi dung):
     moi diem hoi input() se co dap an mac dinh thay vi treo/EOFError.
@@ -919,58 +964,33 @@ def run_translation(config, non_interactive: bool = False):
     model_cfg = get_active_model_config(config)
     config['model'] = model_cfg
 
-    # Resolve backend TRUOC khi pre-flight. Voi llama-server thi khong can Ollama,
-    # va check Ollama dat o dau tung lam run() return som du pipeline chay duoc.
     server_mgr = get_manager(config)
     server_mgr.register_atexit()
     uses_managed_llama = server_mgr.enabled and server_mgr.manages_url(model_cfg.get('ollama_url', ''))
+    if uses_managed_llama and server_mgr.alias:
+        model_cfg['name'] = server_mgr.alias
 
     console.print(f"\n{STATUS_ICONS['start']} [cyan]Che do dich:[/cyan] {mode_info['display']}")
     console.print(
         f"{STATUS_ICONS['start']} [cyan]Model:[/cyan] {model_cfg['name']} "
         f"([dim]source={get_source_lang_key(config)}, mode={mode}[/dim])"
     )
-
-    if uses_managed_llama:
-        console.print(
-            f"{STATUS_ICONS['success']} [green]llama-server (port {server_mgr.port}) do pipeline "
-            f"nam lifecycle: nhiem VRAM cho Whisper truoc, tu bat khi buoc dich bat dau"
-            f"{', tu tat khi xong' if server_mgr.auto_stop else ''}.[/green]"
-        )
-    else:
-        # Pre-flight check: Ollama connection
-        console.print(f"\n{STATUS_ICONS['start']} [cyan]Kiem tra ket noi Ollama...[/cyan]")
-        ollama_ok, ollama_msg = _check_ollama_connection()
-        if ollama_ok:
-            console.print(f"{STATUS_ICONS['success']} [green]{ollama_msg}[/green]")
-        else:
-            console.print(f"{STATUS_ICONS['error']} [red]Ollama loi:[/red] {ollama_msg}")
-            console.print(f"{STATUS_ICONS['warning']} [yellow]Vui long bat Ollama truoc:[/yellow] ollama serve")
-            if non_interactive:
-                console.print(f"{STATUS_ICONS['error']} [red]Thoat (che do non-interactive).[/red]")
-                return
-            resp = input("Thu lai? (y/n): ").strip().lower()
-            if resp == 'y':
-                # Thu lai
-                ollama_ok, ollama_msg = _check_ollama_connection()
-                if not ollama_ok:
-                    console.print(f"{STATUS_ICONS['error']} [red]Ollama van loi. Thoat.[/red]")
-                    return
-                console.print(f"{STATUS_ICONS['success']} [green]{ollama_msg}[/green]")
-            else:
-                return
+    console.print(
+        f"{STATUS_ICONS['info']} [cyan]Pipeline VRAM:[/cyan] "
+        f"Whisper (Tách âm + Nhận diện) -> Giải phóng VRAM -> Bật LLM -> Dịch -> Tự động Clear VRAM"
+    )
 
     db = Database()
     project_name = config['project']['name']
     input_path = config['project']['input_srt']
 
-    # Check Ollama/model and video/audio before allocating the Whisper model.
-    if config.get('pipeline', {}).get('skip_precheck', False):
-        console.print(f"{STATUS_ICONS['warning']} [yellow]Bo qua precheck (pipeline.skip_precheck: true) "
-                      f"- khong kiem tra server/model/audio truoc khi chay.[/yellow]")
-    elif not _precheck_pipeline(config, input_path):
-        console.print(f"{STATUS_ICONS['error']} [red]Precheck fail. Kiem tra loi ben tren.[/red]")
-        return
+    # Precheck đầu vào (Input file + Audio stream + VRAM cho Whisper).
+    # TUYỆT ĐỐI KHÔNG precheck/bật llama-server hay Ollama trước bước Whisper để tránh tràn VRAM
+    # hoặc làm dừng pipeline khi LLM đang tắt để nhường VRAM cho Whisper.
+    if not config.get('pipeline', {}).get('skip_precheck', False):
+        if not _precheck_pipeline(config, input_path):
+            console.print(f"{STATUS_ICONS['error']} [red]Kiem tra file dau vao that bai. Kiem tra loi ben tren.[/red]")
+            return
 
     # Set original_video_path chi khi la file video (de luu vao DB)
     original_video_path = input_path if is_video_file(input_path) else None
@@ -989,10 +1009,10 @@ def run_translation(config, non_interactive: bool = False):
     output_srt = parent
     config['project']['output_srt'] = output_srt
 
-    # Xử lý video -> whisper SRT
+    # BƯỚC 1: WHISPER => TÁCH ÂM & NHẬN DIỆN GIỌNG NÓI (TRƯỚC KHI BẬT LLM)
     whisper_srt_path = None
     if is_video_file(input_path):
-        console.print(f"\n{STATUS_ICONS['processing']} [cyan]Phat hien file video, bat dau transcribe...[/cyan]")
+        console.print(f"\n{STATUS_ICONS['processing']} [cyan][Bước 1/3] Phát hiện file video -> Chạy Whisper & Tách âm trước khi bật LLM...[/cyan]")
         # Copy de adult_boost (suy ra tu mode) khong bi save_config() ghi nguoc vao config.yaml
         whisper_cfg = {**config.get('whisper', {})}
         whisper_cfg.setdefault('adult_boost', mode == 'uncen')
@@ -1010,24 +1030,19 @@ def run_translation(config, non_interactive: bool = False):
         if not os.path.exists(whisper_srt_path) or whisper_changed:
             if whisper_changed and os.path.exists(whisper_srt_path):
                 console.print(f"{STATUS_ICONS['warning']} [yellow]Whisper file changed: {change_msg}[/yellow]")
-            console.print(f"{STATUS_ICONS['start']} [cyan]Transcribing video...[/cyan]")
-            # Nhiem VRAM cua LLM ra truoc: GGUF 5.4GB + Whisper large-v3 khong du cho 8GB,
-            # Whisper se ngam fallback CPU neu con server tro o day.
-            server_mgr.free_vram()
+            console.print(f"{STATUS_ICONS['start']} [cyan]Giải phóng VRAM & bắt đầu tách âm + nhận diện Whisper...[/cyan]")
+            # Đẩy toàn bộ VRAM của LLM ra trước để Whisper không bị tràn VRAM
+            _free_all_llm_vram(config, server_mgr, reason="free VRAM")
             transcriber = None
             try:
-                # The model is loaded exactly once, and this call verifies/downloads
-                # weights as needed before transcribing with the same instance.
                 transcriber = WhisperTranscriber(whisper_cfg)
                 transcriber.transcribe(input_path, whisper_srt_path, language=whisper_cfg.get('language'))
-                # Validate output: file phai co noi dung, neu 0 byte -> abort som
                 if os.path.exists(whisper_srt_path) and os.path.getsize(whisper_srt_path) == 0:
                     raise ValueError(
                         "Whisper tra ve file SRT 0 bytes (video co the im lang hoac "
                         "khong co audio track). Kiem tra lai file video."
                     )
-                console.print(f"{STATUS_ICONS['success']} [green]Da tao phu de:[/green] {whisper_srt_path}")
-                # Cap nhat cache sau khi tao moi
+                console.print(f"{STATUS_ICONS['success']} [green]Da tao phu de Whisper:[/green] {whisper_srt_path}")
                 _update_whisper_cache(project_name, whisper_srt_path)
             except Exception as e:
                 console.print(f"{STATUS_ICONS['error']} [red]Loi transcribe:[/red] {e}")
@@ -1035,8 +1050,9 @@ def run_translation(config, non_interactive: bool = False):
             finally:
                 if transcriber is not None:
                     transcriber.clear_vram()
+                    console.print(f"{STATUS_ICONS['success']} [green]Đã giải phóng VRAM của Whisper để nhường cho LLM.[/green]")
         else:
-            console.print(f"{STATUS_ICONS['success']} [green]Da co phu de, su dung lai:[/green] {whisper_srt_path}")
+            console.print(f"{STATUS_ICONS['success']} [green]Da co phu de Whisper, su dung lai:[/green] {whisper_srt_path}")
 
         config['project']['input_srt'] = whisper_srt_path
 
@@ -1049,8 +1065,6 @@ def run_translation(config, non_interactive: bool = False):
         # Neu whisper file thay doi -> xoa DB + file SRT cu de chay lai
         if whisper_srt_path and whisper_changed:
             console.print(f"{STATUS_ICONS['warning']} [yellow]Xoa DB cu + file SRT de chay lai voi whisper moi...[/yellow]")
-            # Keep the project row so its ID remains valid; clear dependent data
-            # and point the existing project at the refreshed Whisper transcript.
             _clear_project_db(
                 project_id, db, clear_files=True,
                 output_srt=proj.get('output_srt'),
@@ -1060,22 +1074,18 @@ def run_translation(config, non_interactive: bool = False):
 
         if proj:
             if proj['status'] in ('completed', 'completed_with_errors'):
-                # GUI khong co stdin de hoi -> xem nhu user da duyet chay lai.
                 resp = 'y' if non_interactive else input(
                     "Project da hoan thanh truong do. Chay lai? (y/n): ").strip().lower()
                 if resp not in ('y', 'yes'):
                     console.print(f"{STATUS_ICONS['warning']} [yellow]Da huy.[/yellow]")
                     return
-                # Clear toan bo DB + file SRT cu de chay lai tu dau
                 console.print(f"{STATUS_ICONS['warning']} [yellow]Clear toan bo du lieu cu (DB + file SRT)...[/yellow]")
-                # Update input_srt moi neu co
                 if whisper_srt_path:
                     _clear_project_db(project_id, db, clear_files=True, output_srt=proj.get('output_srt'), new_input_srt=whisper_srt_path)
                 else:
                     _clear_project_db(project_id, db, clear_files=True, output_srt=proj.get('output_srt'))
             elif proj['status'] in ('partial', 'failed'):
                 console.print(f"{STATUS_ICONS['warning']} [yellow]Project dang o trang thai '{proj['status']}'[/yellow]")
-                # Mac dinh clear de chay lai tu dau (user yeu cau)
                 console.print(f"{STATUS_ICONS['start']} [cyan]Clear toan bo du lieu cu de chay lai tu dau...[/cyan]")
                 if whisper_srt_path:
                     _clear_project_db(project_id, db, clear_files=True, output_srt=proj.get('output_srt'), new_input_srt=whisper_srt_path)
@@ -1096,9 +1106,6 @@ def run_translation(config, non_interactive: bool = False):
         console.print(f"{STATUS_ICONS['success']} [green]Da tao project moi:[/green] ID={project_id}")
 
         if 'glossary' in config:
-            # Dùng _normalize_glossary_entry để nhận cả schema cũ
-            # (source/target/context) lẫn mới (source_term/target_term/context_hint).
-            # Trước đây dùng term['source'] → KeyError nếu config dùng schema mới.
             from core.pipeline import _normalize_glossary_entry
             for term in config['glossary']:
                 norm = _normalize_glossary_entry(term)
@@ -1111,29 +1118,21 @@ def run_translation(config, non_interactive: bool = False):
                     norm['context_hint']
                 )
 
-    # PRE-CHECK + AUTO-FIX: Phát hiện và tự động sửa lỗi Whisper trước khi dịch
+    # PRE-CHECK + AUTO-FIX SRT (CPU): Phát hiện và tự động sửa lỗi Whisper trước khi dịch
     final_input_srt = config['project']['input_srt']
     if final_input_srt and os.path.exists(final_input_srt) and final_input_srt.lower().endswith('.srt'):
         source_lang_key = get_source_lang_key(config)
         console.print(f"\n{STATUS_ICONS['start']} [cyan]Pre-check + Auto-fix file SRT (Whisper quality)...[/cyan]")
         try:
-            # Auto-fix các lỗi rõ ràng trước
             from core.precheck import WhisperPreCheck, run_precheck
             checker = WhisperPreCheck(source_lang=source_lang_key)
-
-            # Auto-fix nếu có thể
             fixed_path = checker.auto_fix_simple(final_input_srt)
 
-            # Nếu là tiếng Nhật, áp dụng thêm auto-fix thông minh
             if source_lang_key == 'ja':
-                # Parse và áp dụng các sửa lỗi Whisper thông minh
                 import re
                 with open(fixed_path, 'r', encoding='utf-8') as f:
                     content = f.read()
 
-                # Chỉ giữ các cặp sửa lỗi đồng âm tiếng Nhật thực sự (JA -> JA) do Whisper nghe nhầm.
-                # TUYỆT ĐỐI KHÔNG hardcode tên nhân vật phim cũ hay chèn tiếng Việt/Latin vào SRT gốc
-                # (vì sẽ làm sai lệch fugashi/MeCab và AutoCharacterExtractor ở các phim khác).
                 JA_AUTO_FIX = {
                     '生態室': '治療室',
                     '生態師': '整体師',
@@ -1148,18 +1147,15 @@ def run_translation(config, non_interactive: bool = False):
                         ja_fixes += count
 
                 if ja_fixes > 0:
-                    # Lưu file _fixed
                     base, ext = os.path.splitext(fixed_path)
                     ja_fixed_path = f"{base}_ja{ext}"
                     with open(ja_fixed_path, 'w', encoding='utf-8') as f:
                         f.write(content)
                     console.print(f"{STATUS_ICONS['success']} [green]Auto-fix JA: {ja_fixes} cho[/green]")
                     console.print(f"  [cyan]File da fix:[/cyan] {ja_fixed_path}")
-                    # Cập nhật input_srt để dùng file đã fix
                     config['project']['input_srt'] = ja_fixed_path
                     final_input_srt = ja_fixed_path
 
-            # Pre-check trên file đã fix
             precheck_result = run_precheck(final_input_srt, source_lang=source_lang_key, auto_fix=False)
             critical_count = len(precheck_result.get('critical', []))
             if critical_count > 0:
@@ -1170,10 +1166,33 @@ def run_translation(config, non_interactive: bool = False):
             logger.warning(f"Pre-check failed (non-blocking): {e}")
             console.print(f"{STATUS_ICONS['warning']} [yellow]Pre-check loi (bo qua): {e}[/yellow]")
 
-    console.print(f"\n{STATUS_ICONS['start']} [cyan]Bat dau dich...[/cyan]\n")
+    # BƯỚC 2 & 3: BẬT LLM => DỊCH PHỤ ĐỀ => TỰ ĐỘNG CLEAR VRAM KHI XONG
+    console.print(f"\n{STATUS_ICONS['start']} [cyan][Bước 2/3] Bật LLM & bắt đầu dịch phụ đề...[/cyan]\n")
+    if not uses_managed_llama and '/v1' not in str(model_cfg.get('ollama_url', '')):
+        # Chỉ kiểm tra kết nối Ollama ngay trước bước dịch (sau khi Whisper đã xong)
+        ollama_ok, ollama_msg = _check_ollama_connection()
+        if ollama_ok:
+            console.print(f"{STATUS_ICONS['success']} [green]{ollama_msg}[/green]")
+        else:
+            console.print(f"{STATUS_ICONS['error']} [red]Ollama loi:[/red] {ollama_msg}")
+            console.print(f"{STATUS_ICONS['warning']} [yellow]Vui long bat Ollama:[/yellow] ollama serve")
+            if non_interactive:
+                console.print(f"{STATUS_ICONS['error']} [red]Thoat (che do non-interactive).[/red]")
+                return
+            resp = input("Thu lai? (y/n): ").strip().lower()
+            if resp == 'y':
+                ollama_ok, ollama_msg = _check_ollama_connection()
+                if not ollama_ok:
+                    console.print(f"{STATUS_ICONS['error']} [red]Ollama van loi. Thoat.[/red]")
+                    return
+                console.print(f"{STATUS_ICONS['success']} [green]{ollama_msg}[/green]")
+            else:
+                return
+
+    pipeline = None
     try:
         # TranslationPipeline.__init__ goi server_mgr.ensure_running() (via get_manager),
-        # nen model duoc nap sau khi Whisper da clear_vram() - khong tranh VRAM.
+        # nen model duoc nap SAU khi Whisper da clear_vram() - khong tranh VRAM.
         pipeline = TranslationPipeline(config)
         pipeline.run(project_id)
     except LlamaServerError as e:
@@ -1182,30 +1201,39 @@ def run_translation(config, non_interactive: bool = False):
                       f"hoac log: {server_mgr.log_dir}[/yellow]")
         return
     finally:
-        if server_mgr.auto_stop:
-            server_mgr.stop(reason='pipeline ket thuc')
+        console.print(f"\n{STATUS_ICONS['start']} [cyan][Bước 3/3] Tự động giải phóng VRAM sau khi dịch...[/cyan]")
+        if pipeline is not None:
+            try:
+                pipeline.clear_vram()
+            except Exception:
+                pass
+        _free_all_llm_vram(config, server_mgr, reason="pipeline ket thuc - tu dong clear VRAM")
+        console.print(f"{STATUS_ICONS['success']} [green]Đã giải phóng hoàn toàn VRAM.[/green]")
 
 
 def _precheck_pipeline(config: dict, input_path: str) -> bool:
-    """Check input/audio, Ollama model, and available VRAM without loading Whisper."""
-    import requests as _req
+    """Kiểm tra nhanh file đầu vào, audio stream và VRAM cho Whisper.
+    TUYỆT ĐỐI KHÔNG precheck/ping LLM (llama-server / Ollama) ở bước này vì LLM chỉ được bật
+    SAU khi Whisper tách âm và nhận diện xong để tránh tràn VRAM.
+    """
     from rich.console import Console as _C
     from rich.table import Table as _T
     _console = _C()
-    table = _T(title="[bold cyan]Precheck Pipeline[/bold cyan]", show_header=True, header_style="bold magenta")
+    table = _T(title="[bold cyan]Precheck Input & Whisper VRAM[/bold cyan]", show_header=True, header_style="bold magenta")
     table.add_column("Step", style="cyan", width=24)
     table.add_column("Status", width=12)
     table.add_column("Detail", style="dim")
     errors = []
     is_video = is_video_file(input_path)
 
-    # Check input and audio before any model work.
+    # 1. Check input file
     if not os.path.isfile(input_path):
         errors.append(f"Input file not found: {input_path}")
         table.add_row("Input file", "[red]FAIL[/red]", input_path)
     else:
         table.add_row("Input file", "[green]OK[/green]", input_path)
 
+    # 2. Check video audio track via ffprobe
     if is_video and os.path.isfile(input_path):
         try:
             probe = subprocess.run(
@@ -1224,105 +1252,7 @@ def _precheck_pipeline(config: dict, input_path: str) -> bool:
             errors.append(f"Audio precheck failed: {e}")
             table.add_row("Video audio track", "[red]FAIL[/red]", str(e)[:80])
 
-    if errors:
-        _console.print(table)
-        for error in errors:
-            _console.print(f"[red]Precheck: {error}[/red]")
-        return False
-
-    # --- 1. Inference server ping (Ollama hoac llama-server) ---
-    ollama_url = config.get('model', {}).get('ollama_url', 'http://localhost:11434')
-    is_openai_backend = '/v1' in str(ollama_url)
-    base_url = (str(ollama_url).replace('/api/generate', '').replace('/api/chat', '')
-                .replace('/v1/chat/completions', '').replace('/v1', '').rstrip('/'))
-    srv_label = "llama-server" if is_openai_backend else "Ollama server"
-    available_models = set()
-    # Pipeline co the TU BAT server (block llama_server: + enabled) -> precheck kh duoc
-    # fail chi vi model chua nap; buoc dich moi can model, va luc do pipeline nap no.
-    mgr = get_manager(config)
-    auto_start = mgr.enabled and mgr.manages_url(ollama_url)
-    try:
-        if is_openai_backend:
-            if auto_start and not mgr.health():
-                available_models = {mgr.alias}
-                table.add_row(srv_label, "[cyan]AUTO[/cyan]",
-                              f"pipeline se tu bat khi vao buoc dich (port {mgr.port}, "
-                              f"ctx {mgr.cfg.get('ctx', 16384)}, {mgr.cfg.get('model', '?')})")
-            else:
-                r = _req.get(f"{base_url}/health", timeout=5)
-                if r.status_code == 200 and r.json().get('status') == 'ok':
-                    ms = _req.get(f"{base_url}/v1/models", timeout=5).json().get('data', [])
-                    available_models = {m.get('id', '') for m in ms}
-                    table.add_row(srv_label, "[green]OK[/green]", f"{base_url} ({', '.join(sorted(available_models)) or 'no model'})")
-                else:
-                    errors.append(f"{srv_label} returned {r.status_code} {r.text[:80]}")
-                    table.add_row(srv_label, "[red]FAIL[/red]",
-                                  f"HTTP {r.status_code} - bat F:\\llama\\start-llama.ps1 hoac set llama_server.enabled: true")
-        else:
-            r = _req.get(f"{base_url}/api/tags", timeout=5)
-            if r.status_code == 200:
-                available_models = {m['name'] for m in r.json().get('models', [])}
-                table.add_row(srv_label, "[green]OK[/green]", f"{base_url} ({len(available_models)} models)")
-            else:
-                errors.append(f"Ollama returned {r.status_code}")
-                table.add_row(srv_label, "[red]FAIL[/red]", f"HTTP {r.status_code}")
-    except Exception as e:
-        errors.append(f"{srv_label} unreachable: {e}")
-        table.add_row(srv_label, "[red]FAIL[/red]", f"{base_url} - {e}")
-        _console.print(table)
-        return False
-
-    # --- 2. Check + auto-pull the exact model selected for this run ---
-    needed_models = {config['model']['name']} if config.get('model', {}).get('name') else set()
-
-    for model_name in sorted(needed_models):
-        if model_name in available_models:
-            table.add_row(f"Model: {model_name}", "[green]OK[/green]", "available")
-            continue
-        if is_openai_backend:
-            # llama-server dung GGUF nap luc khoi dong, khong co kieu /api/pull nhu Ollama.
-            errors.append(
-                f"Model '{model_name}' khong co tren llama-server. "
-                f"Khoi dong lai: powershell -ExecutionPolicy Bypass -File F:\\llama\\start-llama.ps1"
-            )
-            table.add_row(f"Model: {model_name}", "[red]FAIL[/red]", "nap bang start-llama.ps1")
-            continue
-        # Auto-pull
-        table.add_row(f"Model: {model_name}", "[yellow]PULL[/yellow]", "downloading...")
-        _console.print(table)
-        try:
-            pull_resp = _req.post(
-                f"{base_url}/api/pull",
-                json={"name": model_name, "stream": True},
-                timeout=600, stream=True,
-            )
-            pull_resp.raise_for_status()
-            last_status = ""
-            for line in pull_resp.iter_lines():
-                if not line:
-                    continue
-                try:
-                    import json
-                    chunk = json.loads(line)
-                    status = chunk.get('status', '')
-                    if status and status != last_status:
-                        _console.print(f"  [dim]{model_name}: {status}[/dim]")
-                        last_status = status
-                except Exception:
-                    pass
-            # Verify
-            r2 = _req.get(f"{base_url}/api/tags", timeout=5)
-            available_models = {m['name'] for m in r2.json().get('models', [])}
-            if model_name in available_models:
-                table.add_row(f"Model: {model_name}", "[green]OK[/green]", "pulled")
-            else:
-                errors.append(f"Pull {model_name} completed but not in /api/tags")
-                table.add_row(f"Model: {model_name}", "[red]FAIL[/red]", "pulled but missing")
-        except Exception as e:
-            errors.append(f"Pull {model_name} failed: {e}")
-            table.add_row(f"Model: {model_name}", "[red]FAIL[/red]", str(e)[:50])
-
-    # --- 3. Whisper cache/VRAM inspection (no model instantiation) ---
+    # 3. Whisper cache inspection (no model instantiation)
     whisper_cfg = config.get('whisper', {})
     if is_video:
         from core.transcriber import WhisperTranscriber
@@ -1331,8 +1261,7 @@ def _precheck_pipeline(config: dict, input_path: str) -> bool:
         cache_status = f"cached ({cache['total_mb']}MB)" if cache['cached'] else "not cached; will download during transcription"
         table.add_row(f"Whisper: {whisper_model}", "[green]OK[/green]" if cache['cached'] else "[yellow]INFO[/yellow]", cache_status)
 
-    # --- 4. Pre-load VRAM check ---
-    vram_total = vram_free = None
+    # 4. Pre-load VRAM check for Whisper
     try:
         probe = subprocess.run(
             ['nvidia-smi', '--query-gpu=memory.total,memory.free',
@@ -1349,11 +1278,13 @@ def _precheck_pipeline(config: dict, input_path: str) -> bool:
                 need = 0
             if need and vram_free < need:
                 table.add_row("VRAM", "[yellow]WARN[/yellow]",
-                              f"before load free={vram_free}MB, estimated need~{need}MB; Whisper may fallback to CPU")
+                              f"before load free={vram_free}MB, estimated need~{need}MB; LLM VRAM will be freed before Whisper")
             else:
                 table.add_row("VRAM", "[green]OK[/green]", f"before load total={vram_total}MB, free={vram_free}MB")
     except (FileNotFoundError, Exception):
         table.add_row("VRAM", "[dim]SKIP[/dim]", "nvidia-smi not available")
+
+    table.add_row("LLM Precheck", "[cyan]DEFERRED[/cyan]", "bỏ qua ở đầu pipeline — tự bật sau khi Whisper giải phóng VRAM")
 
     _console.print(table)
     if errors:
@@ -1361,7 +1292,7 @@ def _precheck_pipeline(config: dict, input_path: str) -> bool:
         for e in errors:
             _console.print(f"  - {e}")
         return False
-    _console.print(f"\n[green][OK] Precheck pass - sẵn sàng chạy pipeline.[/green]")
+    _console.print(f"\n[green][OK] Sẵn sàng chạy pipeline (Whisper -> Tách âm -> Bật LLM -> Dịch -> Clear VRAM).[/green]")
     return True
 
 

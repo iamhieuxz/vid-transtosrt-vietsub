@@ -2280,7 +2280,7 @@ class App(QMainWindow):
             except Exception:
                 pass
             if is_openai:
-                self.log_bridge.ollama_status.emit(False, f"{engine} · chua bat (pipeline tu bat)")
+                self.log_bridge.ollama_status.emit(True, f"{engine} · tự bật sau Whisper")
             else:
                 self.log_bridge.ollama_status.emit(False, f"Offline · {short_model}")
 
@@ -2296,7 +2296,7 @@ class App(QMainWindow):
         if not names:
             return
         current = combo.currentText()
-        merged = list(dict.fromkeys(names))
+        merged = list(dict.fromkeys(([current] if current else []) + list(names)))
         combo.blockSignals(True)
         combo.clear()
         combo.addItems(merged)
@@ -2354,8 +2354,14 @@ class App(QMainWindow):
         self.page_settings.timeout_edit.setText(str(active["timeout"]))
         self.page_settings.ollama_url_edit.setText(active["ollama_url"])
 
-        # Model đang active cho mode hiện tại
-        self.page_settings.llm_model_combo.setCurrentText(active.get("name", ""))
+        # Model đang active cho mode hiện tại (thêm vào combo nếu chưa có để không bị mất khi llama-server tắt)
+        active_name = (active.get("name", "") or "").strip()
+        llama_alias = str((self.config.get("llama_server", {}) or {}).get("alias", "") or "").strip()
+        for candidate in (active_name, llama_alias):
+            if candidate and self.page_settings.llm_model_combo.findText(candidate) < 0:
+                self.page_settings.llm_model_combo.insertItem(0, candidate)
+        if active_name:
+            self.page_settings.llm_model_combo.setCurrentText(active_name)
 
         self.page_settings.max_retries_edit.setText(str(pipe.get("max_retries", 5)))
         self.page_settings.checkpoint_edit.setText(str(pipe.get("checkpoint_interval", 20)))

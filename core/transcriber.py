@@ -205,10 +205,15 @@ class WhisperTranscriber:
 
     def clear_vram(self):
         """Free GPU memory after transcription. Call before loading another model
-        (e.g. Ollama) so it gets the full VRAM budget."""
+        (e.g. Ollama / llama-server) so it gets the full VRAM budget."""
         if hasattr(self, 'model') and self.model is not None:
             del self.model
             self.model = None
+        try:
+            import gc
+            gc.collect()
+        except Exception:
+            pass
         try:
             import torch
             if torch.cuda.is_available():
@@ -357,14 +362,18 @@ class WhisperTranscriber:
             tmp_handle = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
             audio_path = tmp_handle.name
             tmp_handle.close()
+            logger.info(f"[TRANSCRIBER] Tách âm thanh từ video (ffmpeg): {video_path}")
             self.extract_audio(
                 video_path, audio_path,
                 start_seconds=start_seconds,
                 duration_seconds=duration_seconds,
             )
 
+            if getattr(self, 'model', None) is None:
+                self.model = self._load_model_with_fallback()
+
             lang = language or self.language
-            logger.info(f"[TRANSCRIBER] Starting transcription (language={lang})")
+            logger.info(f"[TRANSCRIBER] Starting Whisper transcription (language={lang})")
 
             vad_params = dict(
                 threshold=self.vad_threshold,

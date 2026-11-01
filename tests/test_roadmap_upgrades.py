@@ -341,6 +341,114 @@ def test_p3_2_glossaries_subdir_and_gui_lazy_batch_rendering(tmp_path, monkeypat
     assert hasattr(gui.GlossaryPage, "_render_next_batch")
 
 
+def test_vram_pipeline_order_no_llm_precheck(tmp_path, monkeypatch):
+    """Kiểm tra pipeline mới: bỏ precheck llama ở đầu, chạy theo đúng thứ tự:
+    free VRAM -> Whisper (tách âm + nhận diện) -> clear VRAM Whisper -> bật LLM & dịch -> tự clear VRAM LLM.
+    """
+    from unittest.mock import MagicMock
+    import main
+
+    video_file = tmp_path / "DEMO-01.mp4"
+    video_file.write_bytes(b"fake video content")
+
+    cfg = {
+        "project": {
+            "name": "DEMO-01",
+            "input_srt": str(video_file),
+            "output_srt": str(tmp_path),
+            "source_lang": "Tiếng Nhật (Japanese)",
+            "target_lang": "Tiếng Việt (Vietnamese)",
+        },
+        "translation": {"mode": "uncen", "backend": "llama"},
+        "models": {
+            "llama": {
+                "name": "qwen35-9b-iq4",
+                "ollama_url": "http://127.0.0.1:19999/v1/chat/completions",  # port không chạy
+            }
+        },
+        "llama_server": {
+            "enabled": True,
+            "auto_stop": True,
+            "host": "127.0.0.1",
+            "port": 19999,
+            "alias": "qwen35-9b-iq4",
+        },
+        "whisper": {"model_size": "tiny", "device": "cpu", "language": "ja"},
+        "pipeline": {"skip_precheck": False},
+    }
+
+    # 1. _precheck_pipeline KHÔNG ping/check llama-server ở đầu pipeline (dù port 19999 chưa bật)
+    monkeypatch.setattr(main.subprocess, "run", lambda *a, **kw: MagicMock(returncode=0, stdout="codec_type=audio\n"))
+    assert main._precheck_pipeline(cfg, str(video_file)) is True
+
+    # 2. Kiểm tra thứ tự thực thi trong run_translation
+    events = []
+
+    class DummyServerMgr:
+        enabled = True
+        auto_stop = True
+        port = 19999
+        alias = "qwen35-9b-iq4"
+        log_dir = str(tmp_path)
+
+        def register_atexit(self):
+            pass
+
+        def manages_url(self, url):
+            return True
+
+        def free_vram(self):
+            events.append("1_free_llm_vram_before_whisper")
+
+        def stop(self, reason=""):
+            events.append("6_auto_clear_llm_vram_after_translate")
+
+    class DummyTranscriber:
+        def __init__(self, wcfg):
+            events.append("2_whisper_init")
+
+        def transcribe(self, vpath, out_srt, language=None):
+            events.append("3_whisper_extract_audio_and_transcribe")
+            with open(out_srt, "w", encoding="utf-8") as f:
+                f.write("1\n00:00:01,000 --> 00:00:02,000\nこんにちは\n\n")
+
+        def clear_vram(self):
+            events.append("4_whisper_clear_vram")
+
+    class DummyPipeline:
+        def __init__(self, pcfg):
+            events.append("5_start_llm_and_translate_pipeline")
+
+        def run(self, pid):
+            events.append("5b_pipeline_run")
+
+        def clear_vram(self):
+            events.append("6_pipeline_clear_vram")
+
+    monkeypatch.setattr(main, "get_manager", lambda c: DummyServerMgr())
+    monkeypatch.setattr(main, "WhisperTranscriber", DummyTranscriber)
+    monkeypatch.setattr(main, "TranslationPipeline", DummyPipeline)
+    monkeypatch.setattr(main, "save_config", lambda c: None)
+    monkeypatch.setattr(main, "Database", lambda: MagicMock(
+        get_project_by_name=lambda n: None,
+        create_project=lambda **kw: 1,
+    ))
+
+    main.run_translation(cfg, non_interactive=True)
+
+    assert events == [
+        "1_free_llm_vram_before_whisper",
+        "2_whisper_init",
+        "3_whisper_extract_audio_and_transcribe",
+        "4_whisper_clear_vram",
+        "5_start_llm_and_translate_pipeline",
+        "5b_pipeline_run",
+        "6_pipeline_clear_vram",
+        "6_auto_clear_llm_vram_after_translate",
+    ]
+
+
+
 
 
 

@@ -312,6 +312,29 @@ class TranslatorService:
                 logger.debug(f"Context reset failed (non-critical): {e2}")
                 return False
 
+    def unload_model(self) -> bool:
+        """Giải phóng model khỏi VRAM ngay lập tức (keep_alive=0 cho Ollama / clear slot cho llama-server)."""
+        import requests
+        if self.api_type == 'openai':
+            try:
+                requests.post(f"{self.base_url}/slots", json={"action": "clear", "id": 0}, timeout=5)
+            except Exception:
+                pass
+            return True
+        base_url = self.url.replace('/api/generate', '').replace('/api/chat', '').rstrip('/')
+        try:
+            payload = {
+                "model": self.model,
+                "keep_alive": 0,
+            }
+            resp = requests.post(f"{base_url}/api/generate", json=payload, timeout=15)
+            if resp.ok:
+                logger.info(f"[VRAM] Unloaded Ollama model '{self.model}' from VRAM (keep_alive=0)")
+                return True
+        except Exception as e:
+            logger.debug(f"unload_model failed (non-critical): {e}")
+        return False
+
     def warmup(self, timeout=300):
         """Preload model by sending a dummy request.
         
