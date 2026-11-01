@@ -65,3 +65,27 @@
 - source_term: 婚約者
   target_term: vị hôn phu
   context_hint: người đã đính hôn
+- source_term: ワン
+  target_term: gâu
+  context_hint: tiếng chó sủa (không phải tên "Wan")
+- source_term: わん
+  target_term: gâu
+  context_hint: tiếng chó sủa (không phải tên)
+- source_term: 加えろ
+  target_term: ngậm vào
+  context_hint: ngậm vào miệng (không dịch là "thêm")
+- source_term: くわえる
+  target_term: ngậm
+  context_hint: ngậm/ngậm vào
+- source_term: やらしい
+  target_term: dâm
+  context_hint: dâm/dục (không làm mềm thành "dễ thương")
+- source_term: スタイル
+  target_term: dáng người
+  context_hint: thân hình (không dịch là "phong cách")
+- source_term: 外に出す
+  target_term: xuất ra ngoài
+  context_hint: phân biệt với 中に出す = xuất tinh trong
+- source_term: クリトリス
+  target_term: âm vật
+  context_hint: bộ phận sinh dục nữ

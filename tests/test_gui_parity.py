@@ -157,14 +157,17 @@ check('model' in real_cfg, 'block model top-level van con (main.py tu ghi de moi
 
 # GUI phai hien thi DUNG gia tri trong config, khong phai default cua code.
 # config cua anh dat num_predict: 1024 -> GUI phai hien thi 1024.
+# Lay profile theo active_model_key (chung helper voi main.py) vi `translation.backend`
+# co the chot thang mot profile khac (vd 'llama') ngoi tren `translation.mode`.
 active = G.resolved_model_config(real_cfg)
-cfg_val = real_cfg['models'][real_cfg['translation']['mode']].get('num_predict')
+active_key = G.active_model_key(real_cfg)
+cfg_val = real_cfg['models'][active_key].get('num_predict')
 check(active['num_predict'] == cfg_val,
-      'GUI hien thi num_predict=%d = gia tri trong config (%d)' % (active['num_predict'], cfg_val))
+      'GUI hien thi num_predict=%d = gia tri trong config (%s.%d)' % (active['num_predict'], active_key, cfg_val))
 
 # va config van phai la nguon su that khi co gia tri ghi ro
-check(active['timeout'] == real_cfg['models']['uncen']['timeout'],
-      'GUI ton trong timeout=300 cua anh (khong reset ve default 180)')
+check(active['timeout'] == real_cfg['models'][active_key]['timeout'],
+      'GUI ton trong timeout=%s cua anh (khong reset ve default 180)' % real_cfg['models'][active_key]['timeout'])
 
 check(M.validate_config(real_cfg) == [],
       'config.yaml van hop le theo validate_config cua main.py')

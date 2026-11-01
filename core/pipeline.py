@@ -14,9 +14,11 @@ from rich.text import Text
 from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn, SpinnerColumn
 from rich.table import Table
 from .database import Database
+from .llama_server import get_manager
 from .translator import TranslatorService
 from .exporter import Exporter, get_output_folder, get_output_paths, create_video_shortcut
 from .validator import Validator
+from .ja_translator import looks_like_llm_note
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -28,7 +30,8 @@ STATUS_ICONS = {
     'warning': '[!]',
     'complete': '[OK]',
     'pending': '[...]',
-    'processing': '[>>]'
+    'processing': '[>>]',
+    'info': '[i]',
 }
 
 # Prompt translations keyed by target language (English keys for easy extension)
@@ -54,59 +57,35 @@ PROMPTS = {
             '- Neu dong chua co gi hoac chi la tieng viet: giu nguyen\n'
             '- Dung ngay sau dau ] cua JSON\n\n'
             'QUY TAC DICH TIENG NHAT QUAN TRONG:\n'
-            '- Ten rieng Nhat (nhan vat, dia diem): giu nguyen romaji hoac Han tu, KHONG Viet hoa (vi du: Takao, Kachiko, Takada, Takesho - KHONG dich thanh "anh Takao" neu goc khong co)\n'
-            '- Khi Whisper nghe sai tieng Nhat (vi du: "ツマゴ" co the la "卵子"/"trung" hoac "妻"/"vo" tuy ngu canh), SUY LUAN tu ngu canh cuoc hoi thoai de dich chinh xac\n'
-            '- Giai thoai khiêu dam/JAV: dich TRUNG THUC noi dung goc, khong tu lam sach, khong them tu ngư thanh lich\n'
-            '- Tu ngu tinh duc/co the: dich bang tieng Viet tuong duong (vi du: "お腹見せ" -> "cho anh xem/ cham vao bung em" KHONG PHAI "kiem tra bung")\n'
-            '- Han tu Kanji: dich theo Y NGHIA trong ngu canh, khong dich tu ky tu\n'
-            '- Keigo (the kinh ngu): dich theo giong tuong ung tieng Viet (anh/em/chi)\n'
-            '- Thanh ngu (yojijukugo): dich theo y nghia, khong theo tung chu\n'
-            '- Tieng onomatopoeia (オノマトペ): dich bang tu Viet tuong duong (vi du: "くすぐったい" -> "ngứa ngứa/buon buon")\n'
+            '- Ten rieng Nhat (nhan vat, dia diem): chuyen sang Romaji chuan Hepburn (vi du: Tanaka, Sato, Ayumi), KHONG dich am Han-Viet, KHONG tu them danh xung neu cau goc khong co\n'
+            '- Khi Whisper nghe sai tieng Nhat (dong am khac nghia), SUY LUAN tu ngu canh cuoc hoi thoai de dich chinh xac\n'
+            '- Noi dung nguoi lon/nhay cam: dich TRUNG THUC noi dung goc, khong tu lam sach, khong ne tranh\n'
+            '- Tu ngu tinh duc/co the: dich bang tieng Viet tu nhien, phu hop ngu canh\n'
+            '- Han tu Kanji: dich theo Y NGHIA trong ngu canh, khong dich tung chu Han-Viet may moc\n'
+            '- Keigo (the kinh ngu): dich theo giong va quan he nhan vat tuong ung trong tieng Viet (anh/em/chi/co/chu/toi)\n'
+            '- Thanh ngu (yojijukugo): dich theo y nghia tuong duong trong tieng Viet\n'
+            '- Tieng onomatopoeia (オノマトペ): dich bang tu tuong thanh/tuong hinh tieng Viet tu nhien\n'
             '- Do dai moi dong dich: gan bang do dai goc, phu hop de doc phu de\n'
-            '- Tu ngu ngan gon trong anime/JAV (1-2 am tieng Nhat): thuong la tinh tu/am thanh, dich theo ngu canh (vidu: "ふん" -> "hừm/ừ" chu khong phai "mu hinh non")\n\n'
+            '- Tu ngu ngan gon (1-2 am tiet tieng Nhat): thuong la than tu/phan ung, dich theo ngu canh\n\n'
             'XU LY LOI WHISPER THUONG GAP:\n'
-            '- "ツマゴ" trong ngu canh JAV: thuong la "trung" (sinh san) hoac "vo", khong phai ten rieng\n'
-            '- "腹見なさい" / "お腹見せ": nghia la "cho xem/ cham vao bung" trong ngu canh khiêu dam\n'
+            '- "腹見なさい" / "お腹見せ": nghia la "cho xem bung" trong ngu canh than mat\n'
             '- "生態室" thuong la "治療室" (phong tri lieu) do Whisper nghe sai\n'
-            '- "素顔" co the nghe sai thanh "sức khoe" hay "khuôn mat that" tuy ngu canh\n'
-            '- "高田" la ten nguoi (Takada), khong dich thanh "Cao Dat"\n'
-            '- "あゆみ" (Ayumi) - giu nguyen ten Nhat\n\n'
+            '- "生態師" thuong la "整体師" (chuyen vien chinh hinh/massage) do Whisper nghe sai\n\n'
             'QUY TAC CHINH TA TIENG VIET (BAT BUOC):\n'
             '- So "2" = "hai" (KHONG BAO GIO viet "vâng" thay cho "hai")\n'
             '- So "2 cách" = "hai cách" (khong phai "vâng cách")\n'
             '- So "cả 2 bên" = "cả hai bên" (khong phai "cả vâng bên")\n'
             '- Tất cả số đếm đều viết bằng CHỮ (hai, ba, bốn...) không viết "vâng/ba/bốn"\n'
             '- "Cậu/Em/Anh" viết HOA đầu câu, kết thúc có dấu câu (., ?, !)\n\n'
-            'QUY TAC TEN NHAN VAT (NHAT QUAN TOAN PHIM):\n'
-            '- あゆねえ / アユネイ / Ayunee / あゆね → dich thống nhất là "Ayune" (KHÔNG dùng nhiều cách)\n'
-            '- あゆみ / Ayumi → "Ayumi"\n'
-            '- 翔太 → "Shota"\n'
-            '- 篠田 → "Shinoda"\n'
-            '- 高田 → "Takada"\n'
-            '- たけお / 竹尾 → "Takao" (thống nhất)\n'
-            '- かよこ → "Kachiko" (thống nhất)\n'
-            '- あゆみおばさん / おばさん (trong ngữ cảnh là chị của mẹ) → "dì" (KHÔNG dùng "bà/cô" vì cùng thế hệ với mẹ)\n'
-            '- 篠田さん (trong ngữ cảnh ngang hàng hoặc trẻ hơn cha mẹ) → "chú" (KHÔNG dùng "ông")\n\n'
-            'QUY TAC TU CHUYEN NGANH (WHISPER ARTIFACTS):\n'
-            '- "ガラムついてあげるよ" (gara tsuite ageru yo) → "Anh sẽ làm em sướng" (không giữ romaji)\n'
-            '- "アナルティブ" (anal native) → "làm tình qua hậu môn" (không giữ romaji)\n'
-            '- "腕セックス" (ude sekkusu) → "dùng tay kích thích" (không dịch "wrist sex")\n'
-            '- "コモン鳴る賞" (comon naru shou) → "giải thưởng khuyến khích" (Whisper artifact)\n'
-            '- "本賞" (honshou) → "giải chính" (không phải "bản thưởng")\n'
-            '- "金タイプ" (kin taipu) → "vàng" / "loại này" (Whisper nghe "kin" thành "king")\n\n'
+            'QUY TAC TEN NHAN VAT & VAI VE (NHAT QUAN TOAN PHIM):\n'
+            '- Giu nhat quan Romaji cua ten nhan vat xuyen suot toan bo phim theo danh sach nhan vat/glossary\n'
+            '- "おばさん" (nguoi phu nu trung nien / chi hoac em cua me): dich la "dì" hoac "cô" tuy ngu canh, KHONG dung "bà" (trừ khi thực sự là bà lão 70+ tuổi)\n'
+            '- "おじさん" (nguoi dan ong trung nien): dich la "chú" hoac "bác", KHONG dung "ông" neu chua gia\n\n'
             'QUY TAC TU TIENG ANH TRONG BAN DICH:\n'
             '- KHÔNG dùng từ tiếng Anh gốc (Vagina, Anus, Dick, Pussy, Sex)\n'
-    '- LUÔN dịch sang tiếng Việt (âm đạo, hậu môn, dương vật, quan hệ tình dục)\n'
-            '- Whisper có thể nghe tiếng Nhật thành tiếng Anh (vidu: "an ketsu" = "hậu môn") → dịch sang Việt\n\n'
-            'QUY TAC PHAM VI (TYCA BAO HAI - VAI VE):\n'
-            '- あゆみおばさん (aunt) → "dì" (KHÔNG dùng "bà" vì bà = grandmother)\n'
-            '- 篠田さん (chú/anh của đời trước) → "chú" (KHÔNG dùng "ông")\n'
-            '- 23歳 (young woman 23 tuổi) → dịch là "dì" hoặc "chị" tùy ngữ cảnh, KHÔNG "bà"\n'
-            '- Khi nhân vật nói "bà" trong hội thoại → chỉ khi thực sự là bà (70+ tuổi)\n\n'
+            '- LUÔN dịch sang tiếng Việt tương ứng\n\n'
             'XU LY CAU CAT (DONG TIEP):\n'
-            '- "アルバイトの方が" → phải dịch đầy đủ "Còn cả việc làm thêm nữa..." (có dấu 3 chấm vì câu bị cắt)\n'
-            '- Khi thấy chữ "の方が" / "だけど" cuối câu → thêm "..." để thể hiện câu bị cắt\n'
-            '- Whisper hay cắt câu giữa chừng, phải dịch với dấu ... cho tự nhiên\n'
+            '- Khi thấy câu tiếng Nhật kết thúc lửng bằng trợ từ ("の方が", "だけど", "から...", "って...") → thêm "..." ở cuối câu tiếng Việt để thể hiện câu bị ngắt quãng tự nhiên\n'
         ),
         'output': 'Output:',
     },
@@ -208,24 +187,9 @@ def _resolve_lang_key(lang_name: str) -> str:
     return key if key else 'en'  # default to English prompt
 
 
-_JA_TAGGER = None
-_JA_TAGGER_FAILED = False
+from .mecab_utils import get_tagger as _get_ja_tagger
+
 _TERM_LEMMA_CACHE = {}
-
-
-def _get_ja_tagger():
-    global _JA_TAGGER, _JA_TAGGER_FAILED
-    if _JA_TAGGER is not None:
-        return _JA_TAGGER
-    if _JA_TAGGER_FAILED:
-        return None
-    try:
-        import fugashi
-        _JA_TAGGER = fugashi.Tagger()
-        return _JA_TAGGER
-    except Exception:
-        _JA_TAGGER_FAILED = True
-        return None
 
 
 def _get_term_lemmas(term: str):
@@ -269,18 +233,26 @@ def _merge_glossary_files(*paths) -> List[dict]:
     out = {}
 
     def _load(path):
-        if not path or not os.path.exists(path):
+        if not path:
             return
-        try:
-            with open(path, encoding='utf-8') as f:
-                raw = yaml.safe_load(f) or []
-        except Exception as e:
-            logger.warning(f"Failed to load {path}: {e}")
-            return
-        for entry in raw:
-            norm = _normalize_glossary_entry(entry)
-            if norm:
-                out[norm['source_term']] = norm
+        candidates = [path]
+        if os.path.dirname(path) == '':
+            sub_cand = os.path.join('glossaries', path)
+            if sub_cand not in candidates:
+                candidates.append(sub_cand)
+        for cand in candidates:
+            if not os.path.exists(cand):
+                continue
+            try:
+                with open(cand, encoding='utf-8') as f:
+                    raw = yaml.safe_load(f) or []
+            except Exception as e:
+                logger.warning(f"Failed to load {cand}: {e}")
+                continue
+            for entry in raw:
+                norm = _normalize_glossary_entry(entry)
+                if norm:
+                    out[norm['source_term']] = norm
 
     for p in paths:
         _load(p)
@@ -290,6 +262,14 @@ def _merge_glossary_files(*paths) -> List[dict]:
 class TranslationPipeline:
     def __init__(self, config: dict):
         self.config = config
+        # Backend lifecycle nam o day, khong phai o nguoi dung: moi luong goi
+        # TranslationPipeline deu co model san sang, du bat qua CLI hay GUI.
+        # get_manager() trung dung instance ma run_translation() dang nam de no
+        # biet PID cua lenh that va kh khoi dong server lan hai.
+        self.llama_server = get_manager(config)
+        # Chi bat GGUF khi model dang dung that su tro vao server nay (backend Ollama thi khong).
+        if self.llama_server.manages_url(config['model'].get('ollama_url', '')):
+            self.llama_server.ensure_running()
         self.db = Database()
         num_predict = config['model'].get('num_predict', 1024)
         if num_predict < 512:
@@ -317,6 +297,8 @@ class TranslationPipeline:
         self.exporter = Exporter(self.db)
         self.validator = Validator()
         self.enable_glossary = config.get('pipeline', {}).get('enable_glossary', True)
+        # false khi benchmark model: TM tra lai ban dich cu nen che khuat model moi
+        self.use_tm = config.get('pipeline', {}).get('use_translation_memory', True)
         self.glossary_terms = self._load_glossary_terms(config)
         self.num_workers = config['pipeline'].get('num_workers', 1)
         self.checkpoint_interval = config['pipeline'].get('checkpoint_interval', 20)
@@ -359,7 +341,7 @@ class TranslationPipeline:
                 _ja_mode = _trans_cfg.get('mode', 'uncen') or 'uncen'
                 self.ja_translator = JaTranslator(
                     self.translator,
-                    chunk_size=8,
+                    chunk_size=int(_trans_cfg.get('chunk_size', 8) or 8),
                     character_names=config.get('character_names', []),
                     mode=_ja_mode,
                 )
@@ -375,7 +357,7 @@ class TranslationPipeline:
                 from .ja_context_analyzer import JaContextAnalyzer
                 self.ja_context_analyzer = JaContextAnalyzer(
                     self.translator,
-                    context_window_size=config.get('ja_context', {}).get('window_size', 18),
+                    context_window_size=config.get('ja_context', {}).get('window_size', 12),
                 )
                 logger.info("JaContextAnalyzer (Worker A) enabled for 2-tier pipeline")
             except Exception as e:
@@ -432,9 +414,33 @@ class TranslationPipeline:
             self._parse_srt(project_id, project['input_srt'])
             self.db.update_project_status(project_id, 'parsed')
             self._split_seconds = time.monotonic() - split_started_at
+            items = self.db.get_all_items(project_id)
         else:
             # Items đã nạp từ trước (resume/recovery) — không tính split
             self._split_seconds = None
+
+        # Group A2: Tự động trích xuất tên riêng nhân vật bằng fugashi + pykakasi (KHÔNG cần Worker A)
+        if self._is_japanese_source and items:
+            try:
+                from .ja_qa_checker import extract_character_names_from_lines
+                raw_ja_lines = [it.get('original_text', '') or '' for it in items]
+                merged_names = extract_character_names_from_lines(
+                    raw_ja_lines,
+                    existing_names=self.config.get('character_names', []),
+                )
+                if merged_names:
+                    self.config['character_names'] = merged_names
+                    self.validator.character_names = merged_names
+                    if self.ja_translator is not None:
+                        self.ja_translator.character_names = merged_names
+                    names_preview = ', '.join(
+                        f"{e['canonical']} ({e['aliases'][0]})"
+                        for e in merged_names[:8]
+                        if e.get('canonical') and e.get('aliases')
+                    )
+                    logger.info(f"AutoCharacterExtractor: {len(merged_names)} character(s) ready: {names_preview}")
+            except Exception as e:
+                logger.warning(f"AutoCharacterExtractor failed (non-blocking): {e}")
 
         self._create_windows(project_id, project)
         self.db.recover_stuck_tasks(project_id, self.heartbeat_timeout)
@@ -449,7 +455,9 @@ class TranslationPipeline:
         # Worker A: context analysis — chạy TRƯỚC pipeline (dùng với ZH pipeline + ja_trans2)
         if self.ja_context_analyzer is not None:
             console.print(f"{STATUS_ICONS['start']} [cyan]Worker A: analyzing context windows...[/cyan]")
+            self.ja_context_analyzer.character_names = self.config.get('character_names', [])
             stats = self.ja_context_analyzer.analyze_project(project_id, self.db)
+            self._build_film_profile(project_id, project)
             console.print(
                 f"{STATUS_ICONS['success']} Context analysis: "
                 f"{stats['completed']}/{stats['total']} OK, {stats['failed']} failed"
@@ -528,13 +536,16 @@ class TranslationPipeline:
                 logger.warning(f"PostProcessor failed: {e}, skipping")
 
         # Character registry validation: tên riêng nhất quán toàn phim
-        # Build từ window_contexts (Worker A) + config.character_names.
-        # Auto-fix các dòng có JA name X nhưng VI dịch sai canonical.
+        # Hoạt động độc lập với Worker A nhờ AutoCharacterExtractor (fugashi + pykakasi) + config.character_names
         registry_stats = None
-        if self._is_japanese_source and self.ja_context_analyzer is not None:
+        if self._is_japanese_source:
             try:
                 from .character_registry import CharacterRegistry
-                registry = CharacterRegistry(self.db, project_id)
+                registry = CharacterRegistry(
+                    self.db,
+                    project_id,
+                    character_names=self.config.get('character_names', []),
+                )
                 registry.build()
                 registry_stats = self._apply_character_registry(
                     registry, project_id, project,
@@ -546,11 +557,33 @@ class TranslationPipeline:
                     )
                     # Export lại sau khi fix tên
                     self._export_to_folder(project_id, project)
-                    # Gợi ý user add các fix vào glossary_<film>.yaml / glossary_common.yaml
-                    # để phim sau cùng pattern không gặp lại. In ra console, KHÔNG tự sửa file.
                     self._suggest_glossary_updates(project_id, registry, registry_stats)
             except Exception as e:
                 logger.warning(f"CharacterRegistry failed: {e}, skipping")
+
+        # Group C1: JaQAChecker — kiểm tra Phủ định (ない/ません), rò rỉ CJK, độ dài & Glossary
+        if self._is_japanese_source:
+            try:
+                from .ja_qa_checker import JaQAChecker
+                qa_checker = JaQAChecker(
+                    glossary_terms=self.glossary_terms,
+                    character_names=self.config.get('character_names', []),
+                )
+                qa_stats = qa_checker.audit_and_fix_project(
+                    self.db,
+                    project_id,
+                    translator=self.translator,
+                    max_llm_retries=15,
+                )
+                logger.info(
+                    f"JaQAChecker: checked={qa_stats['checked']}, "
+                    f"issues={qa_stats['issues_found']}, auto_fixed={qa_stats['auto_fixed']}, "
+                    f"llm_retried={qa_stats['llm_retried']}, by_type={qa_stats['by_type']}"
+                )
+                if qa_stats.get('auto_fixed', 0) > 0:
+                    self._export_to_folder(project_id, project)
+            except Exception as e:
+                logger.warning(f"JaQAChecker failed (non-blocking): {e}")
 
         # Tự học từ uncen: suy ra cặp (JA, VI) hay đi cùng nhau từ kết quả
         # dịch, ghi ra glossary_<film>.learned.yaml (file RIÊNG, không đụng
@@ -1060,7 +1093,7 @@ class TranslationPipeline:
                             if row and row['retry_count'] >= max_retries:
                                 failed_windows.add(t_info['id'])
                                 self.db.mark_task_dead(t_info['id'], "Exhausted retries")
-                        progress.update(task, advance=1, completed=completed_cnt)
+                        progress.update(task, completed=completed_cnt + len(failed_windows))
                         del futures[f]
                     if failed_cnt >= max_failures and completed_cnt == 0:
                         logger.error(f"Aborting parallel: {failed_cnt} consecutive failures with 0 success")
@@ -1077,117 +1110,101 @@ class TranslationPipeline:
         if hasattr(self, 'translator') and self.translator:
             self.translator.try_recover_circuit_breaker()
 
-        # Lock context reads and DB writes to prevent race conditions in parallel mode
+        # Chỉ giữ lock khi đọc context từ DB (không khóa khi chờ LLM sinh văn bản)
         with self._context_lock:
-            # shortcut: load items once per task (was N+1: each window re-queried full table)
-            # Fix P1-4: get_all_items is expensive for long projects; reuse within a task.
-            try:
-                _all_items_cache = self.db.get_all_items(project_id)
-            except Exception as e:
-                logger.warning(f"get_all_items failed: {e}, falling back to per-call query")
-                _all_items_cache = None
             context = self._get_context(
                 project_id, task['start_pos'], task['end_pos'], project,
-                use_translated=use_translated_history, _items=_all_items_cache,
+                use_translated=use_translated_history,
             )
-            
-            # Retry loop: cho đến khi có kết quả hợp lệ hoặc hết retries
-            max_window_retries = 5
-            result = None
-            for attempt in range(max_window_retries):
-                result = self._translate_window(project_id, task, context, project)
-                if result is not None:
-                    break  # Thành công, thoát retry loop
-                if attempt < max_window_retries - 1:
-                    logger.warning(f"{STATUS_ICONS['warning']} Window {win_idx}: translation returned None, retrying ({attempt+1}/{max_window_retries})...")
-                    time.sleep(1)  # Đợi 1s trước khi retry
 
-            # Parse source lines từ task để dùng khi fail (giữ nguyên source thay vì [UNTRANSLATED])
-            import re as _re
-            _orig_lines = [l.strip() for l in task['original_text'].split('\n') if l.strip()]
-            source_lines_fallback = []
-            for line in _orig_lines:
-                _m = _re.match(r'^\[(\d+)\]\s*(.*)', line)
-                if _m:
-                    source_lines_fallback.append(_m.group(2).strip())
-                else:
-                    # Strip invisible chars and retry
-                    _cleaned = line.lstrip('\ufeff\u200b\u200c\u200d\u2060')
-                    _m = _re.match(r'^\[(\d+)\]\s*(.*)', _cleaned)
-                    if _m:
-                        source_lines_fallback.append(_m.group(2).strip())
-                    else:
-                        source_lines_fallback.append(line)  # không drop
+        # Retry loop gọi LLM (chạy song song ngoài lock khi num_workers > 1)
+        max_window_retries = 5
+        result = None
+        for attempt in range(max_window_retries):
+            result = self._translate_window(project_id, task, context, project)
+            if result is not None:
+                break  # Thành công, thoát retry loop
+            if attempt < max_window_retries - 1:
+                logger.warning(f"{STATUS_ICONS['warning']} Window {win_idx}: translation returned None, retrying ({attempt+1}/{max_window_retries})...")
+                time.sleep(1)  # Đợi 1s trước khi retry
 
-            if result:
-                translations, source_lines = result
+        if result:
+            translations, source_lines = result
 
-                # Check for empty translations - retry per-line nếu có
-                if any(not t or not t.strip() for t in translations):
-                    empty_indices = [i for i, t in enumerate(translations) if not t or not t.strip()]
-                    logger.warning(f"{STATUS_ICONS['warning']} Window {win_idx}: {len(empty_indices)} empty translations, retrying per-line...")
-                    retry_translations = self._retry_per_line(
-                        [source_lines[i] for i in empty_indices],
-                        project.get('source_lang', 'ja'),
-                        project.get('target_lang', 'vi'),
-                        self._get_glossary_for_window(task, project)
-                    )
-                    if retry_translations:
-                        for idx, trans in zip(empty_indices, retry_translations):
-                            if trans and trans.strip():
-                                translations[idx] = trans
+            # Check for empty translations - retry per-line nếu có (ngoài lock)
+            if any(not t or not t.strip() for t in translations):
+                empty_indices = [i for i, t in enumerate(translations) if not t or not t.strip()]
+                logger.warning(f"{STATUS_ICONS['warning']} Window {win_idx}: {len(empty_indices)} empty translations, retrying per-line...")
+                retry_translations = self._retry_per_line(
+                    [source_lines[i] for i in empty_indices],
+                    project.get('source_lang', 'ja'),
+                    project.get('target_lang', 'vi'),
+                    self._get_glossary_for_window(task, project)
+                )
+                if retry_translations:
+                    for idx, trans in zip(empty_indices, retry_translations):
+                        if trans and trans.strip():
+                            translations[idx] = trans
 
-                if self.validator.validate_window_content(source_lines, translations):
+            is_valid = self.validator.validate_window_content(source_lines, translations)
+            if is_valid:
+                try:
+                    # ÁP DỤNG RULE PROCESSOR (character names + anti-artifacts)
                     try:
-                        # ÁP DỤNG RULE PROCESSOR (character names + anti-artifacts)
-                        try:
-                            from .rules import get_rule_processor
-                            processor = get_rule_processor('config.yaml')
-                            translations, violations = processor.process_window(translations)
-                            if violations:
-                                err_violations = [v for v in violations if v['severity'] == 'error']
-                                if err_violations:
-                                    logger.info(f"Window {win_idx}: RuleProcessor fixed {len(violations)} issues ({len(err_violations)} errors)")
-                        except Exception as e:
-                            logger.warning(f"RuleProcessor failed (non-blocking): {e}")
+                        from .rules import get_rule_processor
+                        processor = get_rule_processor('config.yaml')
+                        translations, violations = processor.process_window(translations)
+                        if violations:
+                            err_violations = [v for v in violations if v['severity'] == 'error']
+                            if err_violations:
+                                logger.info(f"Window {win_idx}: RuleProcessor fixed {len(violations)} issues ({len(err_violations)} errors)")
+                    except Exception as e:
+                        logger.warning(f"RuleProcessor failed (non-blocking): {e}")
 
+                    with self._context_lock:
                         self.db.commit_window(project_id, win_id, start_sub, end_sub, translations)
                         self._save_to_tm(project, source_lines, translations)
-                        return True
-                    except Exception as e:
-                        logger.error(f"{STATUS_ICONS['error']} commit_window failed: {e}")
-                        self.db.mark_task_failed(win_id, str(e), retry_count_increment=True)
-                        return False
-                else:
-                    # Validation fail nhưng LLM đã trả output hợp lệ
-                    # Commit trực tiếp — KHÔNG retry (model + validator cùng fail → retry vô hạn)
-                    logger.warning(f"{STATUS_ICONS['warning']} Window {win_idx} failed validation, committing as-is")
-                    try:
-                        # Van ap dung RuleProcessor truoc khi commit
-                        try:
-                            from .rules import get_rule_processor
-                            processor = get_rule_processor('config.yaml')
-                            translations, violations = processor.process_window(translations)
-                            if violations:
-                                logger.info(f"Window {win_idx}: RuleProcessor fixed {len(violations)} issues (after validation fail)")
-                        except Exception as e:
-                            logger.warning(f"RuleProcessor failed (non-blocking): {e}")
-
-                        self.db.commit_window(project_id, win_id, start_sub, end_sub, translations)
-                        # Không lưu vào TM khi window fail validation để tránh làm bẩn TM
-                        return True
-                    except Exception as e:
-                        logger.error(f"{STATUS_ICONS['error']} commit_window (validation-fallback) failed: {e}")
-                        return False
-            else:
-                # LLM fail hoàn toàn sau khi đã retry 3 lần → commit original text
-                logger.warning(f"{STATUS_ICONS['warning']} Window {win_idx}: LLM returned None after {max_window_retries} retries, committing original text")
-                try:
-                    self.db.commit_window(project_id, win_id, start_sub, end_sub, source_lines_fallback)
                     return True
                 except Exception as e:
-                    logger.error(f"{STATUS_ICONS['error']} commit original text failed: {e}")
+                    logger.error(f"{STATUS_ICONS['error']} commit_window failed: {e}")
+                    with self._context_lock:
+                        self.db.mark_task_failed(win_id, str(e), retry_count_increment=True)
                     return False
+            else:
+                # shortcut: retry đúng 1 lần (sampling khác có thể qua validator); lần sau vẫn fail
+                # thì commit as-is để không lặp vô hạn khi model + validator cùng bất đồng.
+                if (task.get('retry_count') or 0) < 1:
+                    logger.warning(f"{STATUS_ICONS['warning']} Window {win_idx} failed validation, retrying once")
+                    with self._context_lock:
+                        self.db.mark_task_failed(win_id, "Validation failed", retry_count_increment=True)
+                    return False
+                logger.warning(f"{STATUS_ICONS['warning']} Window {win_idx} failed validation twice, committing as-is")
+                try:
+                    # Van ap dung RuleProcessor truoc khi commit
+                    try:
+                        from .rules import get_rule_processor
+                        processor = get_rule_processor('config.yaml')
+                        translations, violations = processor.process_window(translations)
+                        if violations:
+                            logger.info(f"Window {win_idx}: RuleProcessor fixed {len(violations)} issues (after validation fail)")
+                    except Exception as e:
+                        logger.warning(f"RuleProcessor failed (non-blocking): {e}")
+
+                    with self._context_lock:
+                        self.db.commit_window(project_id, win_id, start_sub, end_sub, translations)
+                    # Không lưu vào TM khi window fail validation để tránh làm bẩn TM
+                    return True
+                except Exception as e:
+                    logger.error(f"{STATUS_ICONS['error']} commit_window (validation-fallback) failed: {e}")
+                    return False
+        else:
+            # LLM fail hoàn toàn: KHÔNG commit nguyên văn Nhật làm bản dịch (đánh dấu
+            # 'completed' → lỗi im lặng). Đánh failed để vòng ngoài retry, hết lượt thì
+            # vào dead-letter; dòng chưa dịch hiện [UNTRANSLATED] ở SRT.
+            logger.warning(f"{STATUS_ICONS['warning']} Window {win_idx}: LLM returned None after {max_window_retries} retries, marking failed")
+            with self._context_lock:
+                self.db.mark_task_failed(win_id, "LLM returned None", retry_count_increment=True)
+            return False
 
     def _translate_window(self, project_id, task, context, project):
         orig_lines_with_ids = [l.strip() for l in task['original_text'].split('\n') if l.strip()]
@@ -1265,8 +1282,8 @@ class TranslationPipeline:
                 return result, source_lines
 
         tm_hits = []
-        all_in_tm = True
-        for src in source_lines:
+        all_in_tm = self.use_tm
+        for src in (source_lines if self.use_tm else []):
             if src:
                 trans = self.db.get_translation_memory(
                     self.config['project']['source_lang'],
@@ -1289,7 +1306,7 @@ class TranslationPipeline:
         # Japanese 3-pass: literal -> polish -> qa (keigo-aware)
         if self.ja_translator is not None:
             return self._translate_window_ja(
-                task, source_lines, sub_indices, glossary, project_id,
+                task, source_lines, sub_indices, glossary, project_id, context=context,
             )
 
         # Pass 1: standard JSON translation
@@ -1384,9 +1401,9 @@ class TranslationPipeline:
             return glossary
         return self._filter_glossary_for_window(glossary, source_lines)
 
-    def _translate_window_ja(self, task, source_lines, sub_indices, glossary, project_id):
+    def _translate_window_ja(self, task, source_lines, sub_indices, glossary, project_id, context=None):
         """Luồng dịch riêng cho tiếng Nhật: 3-pass (literal → polish → qa)
-        + 2-tier context (inject từ Worker A) + Worker C scene-review.
+        + 2-tier context (inject từ Worker A + history liên-window) + Worker C scene-review.
 
         Trả về (translations, source_lines) giống _translate_window thường.
 
@@ -1409,8 +1426,15 @@ class TranslationPipeline:
         else:
             literal_mode = bool(literal_mode_cfg)
 
-        # Lấy context cho window hiện tại (2-tier)
+        # Lấy context cho window hiện tại (2-tier) + ghép history từ window trước
         context_summary = self._get_ja_context_for_window(task, project_id)
+        history_text = (context or {}).get('history', '').strip() if isinstance(context, dict) else ''
+        if history_text:
+            if context_summary is None:
+                context_summary = {'history': history_text}
+            else:
+                context_summary = dict(context_summary)
+                context_summary['history'] = history_text
 
         # Lọc glossary trước khi render: chỉ giữ terms xuất hiện trong source_lines.
         # JA path trước đây dump cả glossary (2000 term vẫn đổ hết vào), gây tràn num_ctx.
@@ -1422,9 +1446,32 @@ class TranslationPipeline:
                 f"matching {len(source_lines)} source line(s)"
             )
 
-        # Pass 1: literal
+        # Dynamic Few-Shot từ Translation Memory (rapidfuzz)
+        tm_examples = []
+        if getattr(self, 'use_tm', False) and hasattr(self.db, 'find_similar_tm_examples'):
+            try:
+                proj_cfg = self.config.get('project', {}) or {}
+                cand_tm = self.db.find_similar_tm_examples(
+                    proj_cfg.get('source_lang', 'Japanese'),
+                    proj_cfg.get('target_lang', 'Vietnamese'),
+                    source_lines,
+                    domain=proj_cfg.get('name', 'global'),
+                    top_k=3,
+                )
+                if isinstance(cand_tm, list) and cand_tm:
+                    tm_examples = cand_tm
+                    if context_summary is None:
+                        context_summary = {'tm_examples': tm_examples}
+                    else:
+                        context_summary = dict(context_summary)
+                        context_summary['tm_examples'] = tm_examples
+            except Exception as e:
+                logger.debug(f"find_similar_tm_examples failed: {e}")
+
+        # Pass 1: literal (truyền thêm history_text & tm_examples để giữ mạch xưng hô cả ở chế độ 1-pass)
         rough = self.ja_translator.literal_translate(
-            source_lines, glossary_terms=glossary,
+            source_lines, glossary_terms=glossary, history=history_text or None,
+            tm_examples=tm_examples or None,
         )
         # DEBUG: log raw rough to isolate mapping issues
         if logger.isEnabledFor(logging.DEBUG):
@@ -1433,14 +1480,20 @@ class TranslationPipeline:
                 "\n".join(f"  [{j}] {source_lines[j][:30]!r} -> {(rough[j] or '')[:40]!r}"
                           for j in range(len(source_lines)))
             )
-        # Detect raw JA in rough output (off-by-one shift symptom)
+        # Detect raw JA in rough output (off-by-one shift symptom).
+        # Chi coi la echo khi nguon CON kana/kanji: Whisper doi khi xuat san tieng
+        # Viet ("Vâng", "Thôi mà") nen so sanh chuoi tho se sinh false positive
+        # (do that: 64/64 canh bao trong 1 ngay deu la dong khong con CJK).
         if rough:
             for j, (orig, trans) in enumerate(zip(source_lines, rough)):
-                if orig and trans and orig.strip() == trans.strip():
-                    logger.warning(
-                        f"Window {task['window_index']}[{j}]: RAW_JA_ECHO "
-                        f"source={orig[:40]!r} == rough={trans[:40]!r}"
-                    )
+                if not (orig and trans and orig.strip() == trans.strip()):
+                    continue
+                if not re.search(r'[\u3040-\u30ff\u4e00-\u9fff]', orig):
+                    continue
+                logger.warning(
+                    f"Window {task['window_index']}[{j}]: RAW_JA_ECHO "
+                    f"source={orig[:40]!r} == rough={trans[:40]!r}"
+                )
         if rough is None:
             logger.warning(f"Window {task['window_index']}: JA literal pass failed")
             return None
@@ -1503,12 +1556,54 @@ class TranslationPipeline:
                 )
                 final = rough
 
+        # Guard: 2 dong NGUON khac nhau nhung BAN DICH gan nhu trung nhau
+        # => dau hieu model bo roi noi dung cua 1 dong (da gap: JUR-624 dong 233/234,
+        # JUR-630 dong 155/156 khi window=12). Chi canh bao, khong tu sua.
+        try:
+            from difflib import SequenceMatcher
+            for k in range(1, len(final)):
+                a_txt, b_txt = (final[k - 1] or '').strip(), (final[k] or '').strip()
+                if len(a_txt) < 12 or len(b_txt) < 12:
+                    continue
+                if source_lines[k - 1].strip() == source_lines[k].strip():
+                    continue
+                # Nguong 0.88 + tien to chung >=12 ky tu: cap 233/234 cua JUR-624
+                # chi khac nhau 2 tu ("chuyen gi" vs "cai gi") nen ratio = 0.92,
+                # neu de 0.95 se khong bat duoc.
+                ratio = SequenceMatcher(None, a_txt, b_txt).ratio()
+                prefix = 0
+                for ch_a, ch_b in zip(a_txt, b_txt):
+                    if ch_a != ch_b:
+                        break
+                    prefix += 1
+                if ratio >= 0.88 and prefix >= 12:
+                    logger.warning(
+                        f"Window {task['window_index']}: DUP_TRANSLATION "
+                        f"line {k}->{k+1} (ratio={ratio:.2f}) - co the da mat noi dung: "
+                        f"{b_txt[:60]!r}")
+        except Exception:
+            pass
+
         logger.info(
             f"Window {task['window_index']}: JA 3-pass OK "
             f"({len(final)} lines, qa_issues={sum(1 for x in (qa or []) if not x.get('ok'))}, "
             f"context={'yes' if context_summary else 'no'})"
         )
         return final, source_lines
+
+    def _build_film_profile(self, project_id, project):
+        """Tổng hợp hồ sơ phim + ghi glossary_<phim>.characters.yaml (chờ duyệt). Không chặn pipeline."""
+        try:
+            from .film_profile import build_film_profile, write_characters_glossary
+            profile = build_film_profile(
+                self.db, project_id, self.translator, self.config.get('character_names', []),
+                min_windows=(self.config.get('ja_context', {}) or {}).get('min_name_windows', 3))
+            if profile:
+                path = write_characters_glossary(profile, project.get('name', ''))
+                console.print(f"{STATUS_ICONS['info']} [cyan]Film profile: {len(profile.get('names', []))} "
+                              f"nhân vật xác nhận -> {path} (chờ duyệt)[/cyan]")
+        except Exception as e:
+            logger.warning(f"film_profile failed (non-blocking): {e}")
 
     def _get_ja_context_for_window(self, task, project_id):
         """Lấy context từ bảng window_contexts cho translation-window hiện tại.
@@ -1524,7 +1619,9 @@ class TranslationPipeline:
             if not ctx or ctx.get("status") != "completed":
                 return None
             import json as _json
+            from .film_profile import load_profile
             return {
+                "film_profile": load_profile(self.db, project_id),
                 "speakers": _json.loads(ctx.get("speakers_json") or "[]"),
                 "pronouns_map": _json.loads(ctx.get("pronouns_map") or "{}"),
                 "tone": ctx.get("tone", "unknown"),
@@ -1536,12 +1633,34 @@ class TranslationPipeline:
             return None
 
     def _get_context(self, project_id, start_pos, end_pos, project, use_translated=False, _items=None):
-        # shortcut: accept pre-loaded items to avoid N+1 full-table queries (P1-4)
-        items = _items if _items is not None else self.db.get_all_items(project_id)
         hist_size = project['history_size']
         fut_size = project['future_size']
         hist_start = max(0, start_pos - hist_size)
-        hist_items = items[hist_start:start_pos]
+
+        if _items is not None:
+            hist_items = _items[hist_start:start_pos]
+            fut_end = min(len(_items), end_pos + fut_size + 1)
+            fut_items = _items[end_pos + 1:fut_end]
+        else:
+            range_items = None
+            if hasattr(self.db, 'get_items_by_pos_range'):
+                try:
+                    cand = self.db.get_items_by_pos_range(project_id, hist_start, end_pos + fut_size)
+                    if isinstance(cand, list):
+                        range_items = cand
+                except Exception:
+                    range_items = None
+            if range_items is not None:
+                hist_count = start_pos - hist_start
+                win_len = (end_pos - start_pos) + 1
+                hist_items = range_items[:hist_count]
+                fut_items = range_items[hist_count + win_len:]
+            else:
+                items = self.db.get_all_items(project_id)
+                hist_items = items[hist_start:start_pos]
+                fut_end = min(len(items), end_pos + fut_size + 1)
+                fut_items = items[end_pos + 1:fut_end]
+
         hist_lines = []
         # P1-fix: when using translated history, also include source JA in parens
         # so LLM can cross-reference. Format: "[5] {translation} (JA: {original})".
@@ -1559,8 +1678,6 @@ class TranslationPipeline:
                 hist_lines.append(f"[{it['sub_index']}] {original}")
         history = "\n".join(hist_lines) if hist_lines else ""
 
-        fut_end = min(len(items), end_pos + fut_size + 1)
-        fut_items = items[end_pos+1:fut_end]
         future = "\n".join([f"[{it['sub_index']}] {(it.get('original_text') or '').replace(chr(10), ' ').replace(chr(13), ' ')}" for it in fut_items]) if fut_items else ""
 
         # 2-tier: Inject context từ Worker A (JaContextAnalyzer)
@@ -1907,15 +2024,26 @@ class TranslationPipeline:
         return "TEN RIENG BAT BUOC (giu nguyen, KHONG tu y dich/sang tao):\n" + "\n".join(lines) + "\n"
 
     def _save_to_tm(self, project, source_lines, translations):
+        if not self.use_tm:
+            return
         src_lang = self.config['project']['source_lang']
         tgt_lang = self.config['project']['target_lang']
         domain = project['name']
+        batch = []
+        for s, t in zip(source_lines, translations):
+            # không ghi rác vào TM: lần chạy sau sẽ lấy lại đúng bản hỏng này
+            if s.strip() and t.strip() and not looks_like_llm_note(t):
+                batch.append((src_lang, tgt_lang, s, t, domain, 0.95))
+                if 4 <= len(s.strip()) <= 35:
+                    batch.append((src_lang, tgt_lang, s, t, 'global', 0.90))
+        if not batch:
+            return
         with self._db_write_lock:
-            for s, t in zip(source_lines, translations):
-                if s.strip() and t.strip():
-                    self.db.save_translation_memory(src_lang, tgt_lang, s, t, domain=domain, confidence=0.95, min_char_count=4)
-                    if 4 <= len(s.strip()) <= 35:
-                        self.db.save_translation_memory(src_lang, tgt_lang, s, t, domain='global', confidence=0.90, min_char_count=4)
+            if hasattr(self.db, 'save_translation_memory_batch'):
+                self.db.save_translation_memory_batch(batch, min_char_count=4)
+            else:
+                for s_lang, t_lang, s_txt, t_txt, dom, conf in batch:
+                    self.db.save_translation_memory(s_lang, t_lang, s_txt, t_txt, domain=dom, confidence=conf, min_char_count=4)
 
     def _recover_dead_letters(self, project_id, project):
         """

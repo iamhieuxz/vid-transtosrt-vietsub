@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import List, Tuple
 
 logger = logging.getLogger(__name__)
+
+_SENTENCE_SPLIT_RE = re.compile(r'(?<=[。！？!?])\s*|(?<=\.)\s+')
 
 
 def _parse_timestamp(ts: str) -> int:
@@ -31,14 +34,36 @@ def split_long_sub(
     end_ms: int,
     max_duration_ms: int = 6000,
 ) -> List[Tuple[int, int, str]]:
-    """Preserve one cue; punctuation splitting cannot establish speech timing."""
+    """Tách phụ đề quá dài (> max_duration_ms) theo dòng mới hoặc dấu ngắt câu."""
     duration = end_ms - start_ms
-    if duration > max_duration_ms:
+    if duration <= max_duration_ms or not text:
+        return [(start_ms, end_ms, text)]
+
+    # Ưu tiên 1: Tách theo dòng mới (\n) nếu phụ đề đã có sẵn nhiều dòng
+    if '\n' in text:
+        parts = [p.strip() for p in text.split('\n') if p.strip()]
+    else:
+        # Ưu tiên 2: Tách theo dấu kết thúc câu tiếng Nhật / Latin (。！？!?. )
+        parts = [p.strip() for p in _SENTENCE_SPLIT_RE.split(text.strip()) if p and p.strip()]
+
+    if len(parts) <= 1:
         logger.warning(
-            "Long subtitle cue (%dms); preserving original timing for review",
+            "Long subtitle cue (%dms) without sentence breaks; preserving original timing",
             duration,
         )
-    return [(start_ms, end_ms, text)]
+        return [(start_ms, end_ms, text)]
+
+    n = len(parts)
+    step = duration // n
+    if step <= 0:
+        return [(start_ms, end_ms, text)]
+
+    result: List[Tuple[int, int, str]] = []
+    for i, part in enumerate(parts):
+        seg_start = start_ms + i * step
+        seg_end = end_ms if i == n - 1 else (start_ms + (i + 1) * step)
+        result.append((seg_start, seg_end, part))
+    return result
 
 
 def find_long_subs(items: List[dict], max_duration_ms: int = 15000) -> List[dict]:

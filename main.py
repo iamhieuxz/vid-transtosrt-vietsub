@@ -14,6 +14,7 @@ from rich.table import Table
 from core.database import Database
 from core.pipeline import TranslationPipeline
 from core.transcriber import WhisperTranscriber
+from core.llama_server import get_manager, LlamaServerError
 from core.precheck import WhisperPreCheck, run_precheck
 
 try:
@@ -621,31 +622,9 @@ def edit_glossary(config):
 
 
 def validate_config(config):
-    """Kiem tra cau hinh hop le."""
-    errors = []
-
-    if 'project' not in config:
-        errors.append("Thieu muc 'project' trong cau hinh")
-    else:
-        if 'input_srt' not in config['project']:
-            errors.append("Thieu 'input_srt' trong cau hinh")
-        if 'output_srt' not in config['project']:
-            errors.append("Thieu 'output_srt' (folder output) trong cau hinh")
-        if 'name' not in config['project']:
-            errors.append("Thieu 'name' trong cau hinh")
-
-    mode = config.get('translation', {}).get('mode', 'uncen')
-    if mode not in ('default', 'uncen'):
-        errors.append(f"'translation.mode' phai la 'default' hoac 'uncen', hien tai: '{mode}'")
-
-    if 'model' not in config and 'models' not in config:
-        errors.append("Thieu muc 'model' hoac 'models' trong cau hinh")
-    elif 'models' in config:
-        for m, v in config['models'].items():
-            if 'name' not in v:
-                errors.append(f"Thieu 'name' trong models.{m}")
-
-    return errors
+    """Kiểm tra cấu hình hợp lệ (đồng nhất sử dụng core.config_validator)."""
+    from core.config_validator import validate_all
+    return validate_all(config)
 
 
 def get_active_model_config(config):
@@ -653,6 +632,23 @@ def get_active_model_config(config):
     mode = str(get_mode_key(config) or 'default').strip().lower()
     source_lang = (config.get('project', {}).get('source_lang', '') or '').strip().lower()
     models = config.get('models', {})
+
+    # Backend override: `translation.backend` chot thang mot profile trong `models`
+    # (vi du `llama` -> llama-server tren port 8080), khong bi mode/ngon ngu ghi de.
+    # Bo key nay di thi hanh vi hoan toan nhu cu (mode + source_lang nhu truoc).
+    backend = str(config.get('translation', {}).get('backend', '') or '').strip().lower()
+    if backend and backend in models:
+        cfg = models[backend]
+        return {
+            'name': cfg.get('name', 'qwen35-9b-mtp'),
+            'ollama_url': cfg.get('ollama_url', 'http://localhost:8180/v1/chat/completions'),
+            'temperature': cfg.get('temperature', 0.05),
+            # 1.0 vi MTP draft bi loai khi repeat_penalty > 1 (da do: 66 t/s vs 49 t/s)
+            'repeat_penalty': cfg.get('repeat_penalty', 1.0),
+            'num_ctx': cfg.get('num_ctx', 16384),
+            'num_predict': cfg.get('num_predict', 2048),
+            'timeout': cfg.get('timeout', 300),
+        }
 
     # An explicit mode is an intentional model choice; do not let the language
     # preset silently override the uncen model for Japanese projects.
@@ -845,8 +841,24 @@ def _clear_project_db(project_id: int, db, clear_files=False, output_srt=None, d
     conn = db._get_connection()
     cursor = conn.cursor()
 
+    # Xoa translation memory cua project. Domain 'global' la fallback khi domain khong co,
+    # nen phai xoa cac cap (nguon, dich) do project nay luu vao global, neu khong chay lai
+    # voi model moi van lay lai ban dich cu tu TM.
+    row = cursor.execute("SELECT name FROM projects WHERE id = ?", (project_id,)).fetchone()
+    if row:
+        name = row[0]
+        cursor.execute(
+            "DELETE FROM translation_memory WHERE domain = 'global' AND EXISTS ("
+            "SELECT 1 FROM translation_memory d WHERE d.domain = ? "
+            "AND d.source_lang = translation_memory.source_lang "
+            "AND d.target_lang = translation_memory.target_lang "
+            "AND d.source_text = translation_memory.source_text "
+            "AND d.target_text = translation_memory.target_text)", (name,))
+        cursor.execute("DELETE FROM translation_memory WHERE domain = ?", (name,))
+
     # Xoa tat ca window contexts
     cursor.execute("DELETE FROM window_contexts WHERE project_id = ?", (project_id,))
+    cursor.execute("DELETE FROM film_profiles WHERE project_id = ?", (project_id,))
 
     # Xoa tat ca windows
     cursor.execute("DELETE FROM windows WHERE project_id = ?", (project_id,))
@@ -878,7 +890,6 @@ def _clear_project_db(project_id: int, db, clear_files=False, output_srt=None, d
 
     # Xoa file SRT cu neu co
     if clear_files and output_srt:
-        import os
         if os.path.exists(output_srt):
             try:
                 os.remove(output_srt)
@@ -903,32 +914,16 @@ def run_translation(config, non_interactive: bool = False):
             console.print(f"  - {err}")
         return
 
-    # Pre-flight check: Ollama connection
-    console.print(f"\n{STATUS_ICONS['start']} [cyan]Kiem tra ket noi Ollama...[/cyan]")
-    ollama_ok, ollama_msg = _check_ollama_connection()
-    if ollama_ok:
-        console.print(f"{STATUS_ICONS['success']} [green]{ollama_msg}[/green]")
-    else:
-        console.print(f"{STATUS_ICONS['error']} [red]Ollama loi:[/red] {ollama_msg}")
-        console.print(f"{STATUS_ICONS['warning']} [yellow]Vui long bat Ollama truoc:[/yellow] ollama serve")
-        if non_interactive:
-            console.print(f"{STATUS_ICONS['error']} [red]Thoat (che do non-interactive).[/red]")
-            return
-        resp = input("Thu lai? (y/n): ").strip().lower()
-        if resp == 'y':
-            # Thu lai
-            ollama_ok, ollama_msg = _check_ollama_connection()
-            if not ollama_ok:
-                console.print(f"{STATUS_ICONS['error']} [red]Ollama van loi. Thoat.[/red]")
-                return
-            console.print(f"{STATUS_ICONS['success']} [green]{ollama_msg}[/green]")
-        else:
-            return
-
     mode = get_mode_key(config)
     mode_info = TRANSLATION_MODES.get(mode, TRANSLATION_MODES['default'])
     model_cfg = get_active_model_config(config)
     config['model'] = model_cfg
+
+    # Resolve backend TRUOC khi pre-flight. Voi llama-server thi khong can Ollama,
+    # va check Ollama dat o dau tung lam run() return som du pipeline chay duoc.
+    server_mgr = get_manager(config)
+    server_mgr.register_atexit()
+    uses_managed_llama = server_mgr.enabled and server_mgr.manages_url(model_cfg.get('ollama_url', ''))
 
     console.print(f"\n{STATUS_ICONS['start']} [cyan]Che do dich:[/cyan] {mode_info['display']}")
     console.print(
@@ -936,12 +931,44 @@ def run_translation(config, non_interactive: bool = False):
         f"([dim]source={get_source_lang_key(config)}, mode={mode}[/dim])"
     )
 
+    if uses_managed_llama:
+        console.print(
+            f"{STATUS_ICONS['success']} [green]llama-server (port {server_mgr.port}) do pipeline "
+            f"nam lifecycle: nhiem VRAM cho Whisper truoc, tu bat khi buoc dich bat dau"
+            f"{', tu tat khi xong' if server_mgr.auto_stop else ''}.[/green]"
+        )
+    else:
+        # Pre-flight check: Ollama connection
+        console.print(f"\n{STATUS_ICONS['start']} [cyan]Kiem tra ket noi Ollama...[/cyan]")
+        ollama_ok, ollama_msg = _check_ollama_connection()
+        if ollama_ok:
+            console.print(f"{STATUS_ICONS['success']} [green]{ollama_msg}[/green]")
+        else:
+            console.print(f"{STATUS_ICONS['error']} [red]Ollama loi:[/red] {ollama_msg}")
+            console.print(f"{STATUS_ICONS['warning']} [yellow]Vui long bat Ollama truoc:[/yellow] ollama serve")
+            if non_interactive:
+                console.print(f"{STATUS_ICONS['error']} [red]Thoat (che do non-interactive).[/red]")
+                return
+            resp = input("Thu lai? (y/n): ").strip().lower()
+            if resp == 'y':
+                # Thu lai
+                ollama_ok, ollama_msg = _check_ollama_connection()
+                if not ollama_ok:
+                    console.print(f"{STATUS_ICONS['error']} [red]Ollama van loi. Thoat.[/red]")
+                    return
+                console.print(f"{STATUS_ICONS['success']} [green]{ollama_msg}[/green]")
+            else:
+                return
+
     db = Database()
     project_name = config['project']['name']
     input_path = config['project']['input_srt']
 
     # Check Ollama/model and video/audio before allocating the Whisper model.
-    if not _precheck_pipeline(config, input_path):
+    if config.get('pipeline', {}).get('skip_precheck', False):
+        console.print(f"{STATUS_ICONS['warning']} [yellow]Bo qua precheck (pipeline.skip_precheck: true) "
+                      f"- khong kiem tra server/model/audio truoc khi chay.[/yellow]")
+    elif not _precheck_pipeline(config, input_path):
         console.print(f"{STATUS_ICONS['error']} [red]Precheck fail. Kiem tra loi ben tren.[/red]")
         return
 
@@ -966,7 +993,9 @@ def run_translation(config, non_interactive: bool = False):
     whisper_srt_path = None
     if is_video_file(input_path):
         console.print(f"\n{STATUS_ICONS['processing']} [cyan]Phat hien file video, bat dau transcribe...[/cyan]")
-        whisper_cfg = config.get('whisper', {})
+        # Copy de adult_boost (suy ra tu mode) khong bi save_config() ghi nguoc vao config.yaml
+        whisper_cfg = {**config.get('whisper', {})}
+        whisper_cfg.setdefault('adult_boost', mode == 'uncen')
 
         # File whisper: <folder project>/<project_name>_whisper.srt
         whisper_srt_path = _resolve_whisper_path(input_path)
@@ -982,6 +1011,9 @@ def run_translation(config, non_interactive: bool = False):
             if whisper_changed and os.path.exists(whisper_srt_path):
                 console.print(f"{STATUS_ICONS['warning']} [yellow]Whisper file changed: {change_msg}[/yellow]")
             console.print(f"{STATUS_ICONS['start']} [cyan]Transcribing video...[/cyan]")
+            # Nhiem VRAM cua LLM ra truoc: GGUF 5.4GB + Whisper large-v3 khong du cho 8GB,
+            # Whisper se ngam fallback CPU neu con server tro o day.
+            server_mgr.free_vram()
             transcriber = None
             try:
                 # The model is loaded exactly once, and this call verifies/downloads
@@ -1099,22 +1131,10 @@ def run_translation(config, non_interactive: bool = False):
                 with open(fixed_path, 'r', encoding='utf-8') as f:
                     content = f.read()
 
-                # Các từ cần auto-fix cho JA
+                # Chỉ giữ các cặp sửa lỗi đồng âm tiếng Nhật thực sự (JA -> JA) do Whisper nghe nhầm.
+                # TUYỆT ĐỐI KHÔNG hardcode tên nhân vật phim cũ hay chèn tiếng Việt/Latin vào SRT gốc
+                # (vì sẽ làm sai lệch fugashi/MeCab và AutoCharacterExtractor ở các phim khác).
                 JA_AUTO_FIX = {
-                    # Tên riêng
-                    'かよこ': 'Kachiko',
-                    'たけお': 'Takao',
-                    'タケホー': 'Takesho',
-                    '竹尾': 'Takeo',
-                    'あゆみ': 'Ayumi',
-                    '高田': 'Takada',
-                    '高田さん': 'Takada-san',
-                    # Whisper artifacts
-                    'żeliさん': 'Kachiko',
-                    'ビールある indic': 'Bia đây rồi',
-                    'ビールある': 'Bia đây rồi',
-                    '家計測': 'quản lý chi tiêu gia đình',
-                    # Từ Nhật nghe sai
                     '生態室': '治療室',
                     '生態師': '整体師',
                     '腹見': 'お腹見せ',
@@ -1151,8 +1171,19 @@ def run_translation(config, non_interactive: bool = False):
             console.print(f"{STATUS_ICONS['warning']} [yellow]Pre-check loi (bo qua): {e}[/yellow]")
 
     console.print(f"\n{STATUS_ICONS['start']} [cyan]Bat dau dich...[/cyan]\n")
-    pipeline = TranslationPipeline(config)
-    pipeline.run(project_id)
+    try:
+        # TranslationPipeline.__init__ goi server_mgr.ensure_running() (via get_manager),
+        # nen model duoc nap sau khi Whisper da clear_vram() - khong tranh VRAM.
+        pipeline = TranslationPipeline(config)
+        pipeline.run(project_id)
+    except LlamaServerError as e:
+        console.print(f"{STATUS_ICONS['error']} [red]llama-server khong san sang:[/red] {e}")
+        console.print(f"{STATUS_ICONS['warning']} [yellow]Kiem tra llama_server: trong config.yaml "
+                      f"hoac log: {server_mgr.log_dir}[/yellow]")
+        return
+    finally:
+        if server_mgr.auto_stop:
+            server_mgr.stop(reason='pipeline ket thuc')
 
 
 def _precheck_pipeline(config: dict, input_path: str) -> bool:
@@ -1199,20 +1230,45 @@ def _precheck_pipeline(config: dict, input_path: str) -> bool:
             _console.print(f"[red]Precheck: {error}[/red]")
         return False
 
-    # --- 1. Ollama ping ---
+    # --- 1. Inference server ping (Ollama hoac llama-server) ---
     ollama_url = config.get('model', {}).get('ollama_url', 'http://localhost:11434')
-    base_url = ollama_url.replace('/api/generate', '').replace('/api/chat', '').rstrip('/')
+    is_openai_backend = '/v1' in str(ollama_url)
+    base_url = (str(ollama_url).replace('/api/generate', '').replace('/api/chat', '')
+                .replace('/v1/chat/completions', '').replace('/v1', '').rstrip('/'))
+    srv_label = "llama-server" if is_openai_backend else "Ollama server"
+    available_models = set()
+    # Pipeline co the TU BAT server (block llama_server: + enabled) -> precheck kh duoc
+    # fail chi vi model chua nap; buoc dich moi can model, va luc do pipeline nap no.
+    mgr = get_manager(config)
+    auto_start = mgr.enabled and mgr.manages_url(ollama_url)
     try:
-        r = _req.get(f"{base_url}/api/tags", timeout=5)
-        if r.status_code == 200:
-            available_models = {m['name'] for m in r.json().get('models', [])}
-            table.add_row("Ollama server", "[green]OK[/green]", f"{base_url} ({len(available_models)} models)")
+        if is_openai_backend:
+            if auto_start and not mgr.health():
+                available_models = {mgr.alias}
+                table.add_row(srv_label, "[cyan]AUTO[/cyan]",
+                              f"pipeline se tu bat khi vao buoc dich (port {mgr.port}, "
+                              f"ctx {mgr.cfg.get('ctx', 16384)}, {mgr.cfg.get('model', '?')})")
+            else:
+                r = _req.get(f"{base_url}/health", timeout=5)
+                if r.status_code == 200 and r.json().get('status') == 'ok':
+                    ms = _req.get(f"{base_url}/v1/models", timeout=5).json().get('data', [])
+                    available_models = {m.get('id', '') for m in ms}
+                    table.add_row(srv_label, "[green]OK[/green]", f"{base_url} ({', '.join(sorted(available_models)) or 'no model'})")
+                else:
+                    errors.append(f"{srv_label} returned {r.status_code} {r.text[:80]}")
+                    table.add_row(srv_label, "[red]FAIL[/red]",
+                                  f"HTTP {r.status_code} - bat F:\\llama\\start-llama.ps1 hoac set llama_server.enabled: true")
         else:
-            errors.append(f"Ollama returned {r.status_code}")
-            table.add_row("Ollama server", "[red]FAIL[/red]", f"HTTP {r.status_code}")
+            r = _req.get(f"{base_url}/api/tags", timeout=5)
+            if r.status_code == 200:
+                available_models = {m['name'] for m in r.json().get('models', [])}
+                table.add_row(srv_label, "[green]OK[/green]", f"{base_url} ({len(available_models)} models)")
+            else:
+                errors.append(f"Ollama returned {r.status_code}")
+                table.add_row(srv_label, "[red]FAIL[/red]", f"HTTP {r.status_code}")
     except Exception as e:
-        errors.append(f"Ollama unreachable: {e}")
-        table.add_row("Ollama server", "[red]FAIL[/red]", f"{base_url} - {e}")
+        errors.append(f"{srv_label} unreachable: {e}")
+        table.add_row(srv_label, "[red]FAIL[/red]", f"{base_url} - {e}")
         _console.print(table)
         return False
 
@@ -1222,6 +1278,14 @@ def _precheck_pipeline(config: dict, input_path: str) -> bool:
     for model_name in sorted(needed_models):
         if model_name in available_models:
             table.add_row(f"Model: {model_name}", "[green]OK[/green]", "available")
+            continue
+        if is_openai_backend:
+            # llama-server dung GGUF nap luc khoi dong, khong co kieu /api/pull nhu Ollama.
+            errors.append(
+                f"Model '{model_name}' khong co tren llama-server. "
+                f"Khoi dong lai: powershell -ExecutionPolicy Bypass -File F:\\llama\\start-llama.ps1"
+            )
+            table.add_row(f"Model: {model_name}", "[red]FAIL[/red]", "nap bang start-llama.ps1")
             continue
         # Auto-pull
         table.add_row(f"Model: {model_name}", "[yellow]PULL[/yellow]", "downloading...")

@@ -29,10 +29,25 @@ class TranslatorService:
         elif '/api/generate' in base_url:
             self.api_type = 'generate'
             self.url = base_url.rstrip('/')  # already has /api/generate
+        elif ('/v1/chat/completions' in base_url or '/v1/completions' in base_url
+              or '/v1/' in base_url or base_url.rstrip('/').endswith('/v1')):
+            # llama.cpp / llama-server (OpenAI-compatible). Server phai chay --jinja
+            # thi template moi duoc apply, giong cach Ollama /api/generate wrap prompt.
+            self.api_type = 'openai'
+            root = base_url.rstrip('/')
+            for suffix in ('/v1/chat/completions', '/v1/completions', '/v1'):
+                if root.endswith(suffix):
+                    root = root[:-len(suffix)]
+                    break
+            self.base_url = root
+            self.url = self.base_url + '/v1/chat/completions'
         else:
             # Default use generate API (mo ta model ho tro tot hon)
             self.api_type = 'generate'
             self.url = base_url.rstrip('/') + '/api/generate'
+        if not hasattr(self, 'base_url'):
+            self.base_url = self.url.replace('/api/chat', '').replace('/api/generate', '') \
+                .replace('/v1/chat/completions', '').rstrip('/')
 
         self.temperature = temperature
         self.repeat_penalty = repeat_penalty
@@ -58,6 +73,14 @@ class TranslatorService:
                 else:
                     self._error_count = 0
 
+        # Context Guard (Group C2): tự động nâng num_ctx nếu prompt dài vượt ngưỡng
+        eff_num_predict = num_predict or self.num_predict
+        try:
+            from .ja_qa_checker import guard_prompt_num_ctx
+            eff_num_ctx = guard_prompt_num_ctx(prompt, self.num_ctx, eff_num_predict)
+        except Exception:
+            eff_num_ctx = self.num_ctx
+
         # Build payload based on API type
         if self.api_type == 'chat':
             payload = {
@@ -68,9 +91,26 @@ class TranslatorService:
                 "options": {
                     "temperature": temperature if temperature is not None else self.temperature,
                     "repeat_penalty": self.repeat_penalty,
-                    "num_ctx": self.num_ctx,
-                    "num_predict": num_predict or self.num_predict,
+                    "num_ctx": eff_num_ctx,
+                    "num_predict": eff_num_predict,
                 }
+            }
+        elif self.api_type == 'openai':
+            # llama.cpp /v1/chat/completions. Luu y: num_ctx KH phai tham so theo-request
+            # o day - no bi --ctx-size cua server chot ngay luc khoi dong, nen server
+            # phai du lon hon buoc cao nhat cua ContextGuard (16384).
+            payload = {
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+                "temperature": temperature if temperature is not None else self.temperature,
+                "max_tokens": eff_num_predict,
+                # llama.cpp chap nhan cac tham so sampler cua no o top-level ngoai OpenAI chuan.
+                # Server mac dinh da --repeat-penalty 1.0 (nhat quan voi gia tri duoi day).
+                "repeat_penalty": self.repeat_penalty,
+                # Lop thu 2 chan thinking (lop 1 la --reasoning-budget 0 cua server).
+                # Template nao khong ho tro thi key nay bi bo qua, khong gay loi.
+                "chat_template_kwargs": {"enable_thinking": False},
             }
         else:
             payload = {
@@ -81,11 +121,12 @@ class TranslatorService:
                 "options": {
                     "temperature": temperature if temperature is not None else self.temperature,
                     "repeat_penalty": self.repeat_penalty,
-                    "num_ctx": self.num_ctx,
-                    "num_predict": num_predict or self.num_predict,
+                    "num_ctx": eff_num_ctx,
+                    "num_predict": eff_num_predict,
                 }
             }
 
+        _grown_once = False
         for attempt in range(retries + 1):
             try:
                 resp = requests.post(self.url, json=payload, timeout=self.timeout)
@@ -95,6 +136,35 @@ class TranslatorService:
                 # Extract response based on API type
                 if self.api_type == 'chat':
                     raw = data.get("message", {}).get("content", "").strip()
+                elif self.api_type == 'openai':
+                    choice = (data.get("choices") or [{}])[0]
+                    raw = (choice.get("message", {}).get("content", "") or "").strip()
+                    if raw and choice.get("finish_reason") == "length":
+                        # Có nội dung nhưng bị cắt giữa chừng: câu cuối window sẽ cụt/JSON hỏng
+                        # mà không ai biết. Nới num_predict 1 lần rồi sinh lại.
+                        grown = min(eff_num_predict * 2, 4096)
+                        if grown > eff_num_predict and not _grown_once:
+                            logger.warning(
+                                f"[openai] output bi cat tai max_tokens={eff_num_predict}, "
+                                f"nang len {grown} va sinh lai")
+                            eff_num_predict = grown
+                            payload["max_tokens"] = grown
+                            _grown_once = True
+                            # Gọi lại tại chỗ (không dùng continue: lần thử cuối sẽ thoát vòng và trả None)
+                            resp = requests.post(self.url, json=payload, timeout=self.timeout)
+                            resp.raise_for_status()
+                            choice = (resp.json().get("choices") or [{}])[0]
+                            raw = (choice.get("message", {}).get("content", "") or "").strip()
+                        if raw and choice.get("finish_reason") == "length":
+                            logger.warning(
+                            f"[openai] output van bi cat o max_tokens={eff_num_predict}; "
+                            "cau cuoi co the cut")
+                    if not raw and choice.get("finish_reason") == "length":
+                        # Model bi cat khi dang suy luan -> retry la vo ich, phai giam
+                        # token thinking (llama_server.reasoning_budget) hoac num_predict.
+                        logger.warning(
+                            "[openai] content rong + finish_reason=length: model cham max_tokens "
+                            f"({eff_num_predict}) khi dang suy luan, khong phai loi tam thoi")
                 else:
                     raw = data.get("response", "").strip()
 
@@ -150,6 +220,10 @@ class TranslatorService:
         Returns True neu Ollama phan hoi duoc /api/tags.
         """
         try:
+            if self.api_type == 'openai':
+                # llama-server expose /health (200 khi model da san sang)
+                resp = requests.get(f"{self.base_url}/health", timeout=timeout)
+                return resp.status_code == 200
             tags_url = self.url.replace('/api/generate', '/api/tags').replace('/api/chat', '/api/tags')
             resp = requests.get(tags_url, timeout=timeout)
             return resp.status_code == 200
@@ -193,6 +267,18 @@ class TranslatorService:
             True if reset succeeded (model unloaded/reloaded cycle started).
         """
         import requests
+        if self.api_type == 'openai':
+            # llama-server khong giu "session" nhu Ollama: moi request /v1/chat/completions
+            # tu do, KV chi duoc dung lai theo prefix cung slot. Thu clear slot qua admin API
+            # (bat bang --admin-api); neu khong duoc thi bo qua vi van an toan.
+            try:
+                r = requests.post(f"{self.base_url}/slots", json={"action": "clear", "id": 0}, timeout=10)
+                if r.ok:
+                    logger.debug("Context reset OK via /slots clear")
+                    return True
+            except Exception as e:
+                logger.debug(f"/slots clear khong kha dung ({e}) - llama-server stateless, bo qua")
+            return True
         base_url = self.url.replace('/api/generate', '').replace('/api/chat', '').rstrip('/')
         try:
             # Strategy 1: keep_alive trick — model unloads 1s after this response.
@@ -254,6 +340,14 @@ class TranslatorService:
                     "num_predict": 10,
                 }
             }
+        elif self.api_type == 'openai':
+            payload = {
+                "model": self.model,
+                "messages": [{"role": "user", "content": warmup_prompt}],
+                "stream": False,
+                "temperature": 0.1,
+                "max_tokens": 10,
+            }
         else:
             payload = {
                 "model": self.model,
@@ -272,9 +366,14 @@ class TranslatorService:
 
             if self.api_type == 'chat':
                 response = data.get("message", {}).get("content", "").strip()
+            elif self.api_type == 'openai':
+                response = (data.get("choices", [{}])[0]
+                                .get("message", {}).get("content", "") or "").strip()
             else:
                 response = data.get("response", "").strip()
 
+            # load_duration la rieng cua Ollama; llama-server da load model luc khoi dong
+            # nen o day chi can phan hoi la du.
             load_duration = data.get("load_duration", 0) / 1e9  # convert to seconds
             logger.info(f"[WARMUP] Model loaded in {load_duration:.1f}s, response: '{response}'")
             return True

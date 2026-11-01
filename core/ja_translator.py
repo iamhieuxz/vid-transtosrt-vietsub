@@ -40,6 +40,9 @@ Phong cách tự nhiên, dễ hiểu, đúng giọng nhân vật.
   + 君 (kimi) → "em" (vai dưới)
   + あなた (anata) → "anh" mặc định
   + 不明確 (không rõ) → "anh" mặc định cho nam, "chị" cho nữ theo giọng tự xưng của nhân vật.
+  + 兄さん/お兄さん/お兄ちゃん → "anh" (KHÔNG "cậu"); 姉さん/お姉さん/お姉ちゃん → "chị";
+    弟/妹 gọi bằng tên hoặc "em". 旦那/あなた (vợ gọi chồng) → "anh"; 奥さん → "chị"/"vợ" tùy người nói.
+    お義母さん/お義父さん → "mẹ"/"bố" (hoặc "mẹ chồng"/"bố chồng" khi người nói là con dâu). Giữ nguyên cách xưng đã chọn.
   + 俺/僕 (ore/boku) → "tôi" (giọng nam)
   + あたし/私 (atashi/watashi) → "tôi" (giọng nữ)
   + 私 (watashi) trung tính → "tôi"
@@ -90,9 +93,9 @@ _LITERAL_TEMPLATE = """\
 Bản dịch nguyên văn từng câu. CHỈ DỊCH SANG TIẾNG VIỆT, KHÔNG trau chuốt.
 
 OUTPUT FORMAT (BẮT BUỘC):
-1. 越南語訳
-2. 越南語訳
-3. 越南語訳
+1. <bản dịch tiếng Việt>
+2. <bản dịch tiếng Việt>
+3. <bản dịch tiếng Việt>
 
 Return numbered list, đúng {n} dòng. Không thêm text ngoài danh sách.
 Không giữ nguyên câu tiếng Nhật. Không thêm comment.
@@ -223,12 +226,35 @@ def _render_character_block(character_names) -> str:
 
 
 def _render_context(context_summary) -> str:
-    """Render context summary (từ JaContextAnalyzer) thành block inject vào prompt polish.
+    """Render context summary (từ JaContextAnalyzer + history liên-window) thành block inject vào prompt polish.
 
     Nếu context_summary None / rỗng → trả chuỗi rỗng (baseline 3-pass).
     """
     if not context_summary:
         return ""
+    from .film_profile import render_profile_block
+    profile_block = render_profile_block(context_summary.get("film_profile"))
+    history_text = (context_summary.get("history") or "").strip()
+    history_block = ""
+    if history_text:
+        history_block = (
+            "CÁC CÂU ĐÃ DỊCH Ở WINDOW TRƯỚC (CHỈ ĐỌC để giữ mạch xưng hô và ngữ cảnh, TUYỆT ĐỐI KHÔNG dịch lại):\n"
+            f"{history_text}\n\n"
+        )
+    tm_examples = context_summary.get("tm_examples") or []
+    tm_block = ""
+    if tm_examples:
+        ex_lines = [
+            f"  + {ex['source_text']} -> {ex['target_text']}"
+            for ex in tm_examples
+            if isinstance(ex, dict) and ex.get("source_text") and ex.get("target_text")
+        ]
+        if ex_lines:
+            tm_block = (
+                "VÍ DỤ CÂU TƯƠNG TỰ TỪ BỘ NHỚ DỊCH (tham khảo văn phong và từ vựng):\n"
+                + "\n".join(ex_lines)
+                + "\n\n"
+            )
     parts = []
     speakers = context_summary.get("speakers") or []
     if speakers:
@@ -255,8 +281,15 @@ def _render_context(context_summary) -> str:
     if summary:
         parts.append(f"- Tóm tắt tình huống: {summary}")
     if not parts:
-        return ""
-    return "NGỮ CẢNH WINDOW (đã phân tích trước, dùng để chuẩn hóa xưng hô):\n" + "\n".join(parts) + "\n\n"
+        return profile_block + history_block + tm_block
+    return (
+        profile_block
+        + history_block
+        + tm_block
+        + "NGỮ CẢNH WINDOW (đã phân tích trước, dùng để chuẩn hóa xưng hô):\n"
+        + "\n".join(parts)
+        + "\n\n"
+    )
 
 
 def _number_lines(lines: List[str]) -> str:
@@ -284,9 +317,10 @@ Input: こんにちは
 Output: 1. Xin chào
 
 Input: ありがとうございます
-Output: 1. Cảm ơn anh/chị
+Output: 1. Cảm ơn rất nhiều
 
 Keigo: です/ます → "anh/chị"; だ/する → "tớ/cậu".
+Family: 兄さん/お兄さん/お兄ちゃん=anh, 姉さん/お姉さん=chị (KHÔNG dịch thành "cậu").
 Particles: ね=nhỉ, よ=nhấn mạnh, わ=sự ngạc nhiên, ぞ=cảnh báo.
 Onomatopoeia: きらきら→lấp lánh, わくわく→hào hứng, ドキドキ→đập thình thịch.
 Common mistakes to avoid: 勉強=học (not "cố gắng"), 汽車=xe lửa, 階段=cầu thang."""
@@ -320,6 +354,7 @@ UNCEN MODE (adult content — translate literally, do NOT sanitize):
 - MANDATORY GLOSSARY entries below are ABSOLUTE RULES — use the exact target word.
 
 Keigo: です/ます → "anh/chị"; だ/する → "tớ/cậu".
+Family: 兄さん/お兄さん/お兄ちゃん=anh, 姉さん/お姉さん=chị (KHÔNG dịch thành "cậu").
 Particles: ね=nhỉ, よ=nhấn mạnh, わ=sự ngạc nhiên, ぞ=cảnh báo.
 Onomatopoeia: きらきら→lấp lánh, わくわく→hào hứng, ドキドキ→đập thình thịch."""
 
@@ -400,8 +435,36 @@ def _strip_leading_number(line: str) -> str:
     return _LEADING_NUM_RE.sub("", line).strip()
 
 
+# Model hay trả kèm chú thích tự nói với mình ("(Giữ nguyên nếu ngữ cảnh phù hợp...)",
+# ', hoặc "..."') thay vì bản dịch thuần — đo ở ADN-627 cue 223-228.
+_LLM_NOTE_RE = re.compile(
+    r"\((?:Giữ|Nếu|Cần|Lưu ý|Có thể|Hoặc|Note)\b|,\s*hoặc\s*[\"“']|xác định xưng hô|ngữ cảnh phù hợp",
+    re.IGNORECASE,
+)
+_OPEN_QUOTES = "\"'“‘"
+
+
+def looks_like_llm_note(text: str) -> bool:
+    """True nếu `text` chứa chú thích model tự nói với mình. Dùng cho TM: thoại mở bằng nháy vẫn hợp lệ."""
+    return bool(_LLM_NOTE_RE.search((text or "").strip()))
+
+
+def looks_like_llm_junk(text: str, reference: str = "") -> bool:
+    """True nếu `text` là chú thích của model hoặc bị bọc/mở bằng dấu nháy mà `reference` thì không.
+
+    Dùng để chặn suggestion của QA và chặn ghi TM; không dùng cho bản dịch chính
+    (thoại thật có thể mở bằng dấu nháy).
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    if looks_like_llm_note(t):
+        return True
+    return t[0] in _OPEN_QUOTES and not (reference or "").strip().startswith(tuple(_OPEN_QUOTES))
+
+
 def _clean_markdown(line: str) -> str:
-    """Strip markdown bold, leading arrows, giữ text thuần. Áp dụng cho mọi
+    r"""Strip markdown bold, leading arrows, giữ text thuần. Áp dụng cho mọi
     LLM output trước khi xuất ra SRT — tránh bug **xxx**, → xxx leak.
 
     Thêm: dọn 3 dạng leak model 8B hay trả (đo ở JUL-409: 8/255 dòng bẩn):
@@ -420,6 +483,36 @@ def _clean_markdown(line: str) -> str:
     cleaned = _THAI_RE.sub("", cleaned)
     cleaned = _JUNK_TAIL_RE.sub("", cleaned)
     return cleaned.strip()
+
+
+_NUMBERED_RE = re.compile(r"^\s*(\d+)\s*[\.\)、]\s*(.*)$")
+
+
+def _map_numbered(out_lines: List[str], n: int) -> List[Optional[str]]:
+    """Ghép output LLM về n slot theo SỐ THỨ TỰ ("3. ..." → slot 3).
+
+    Số nào thiếu/ngoài 1..n → slot None (caller dịch lại riêng); số trùng giữ lần đầu.
+    Preamble/dòng không đánh số bị bỏ qua. Nếu không dòng nào có số (prompt cũ) thì
+    rơi về ghép theo vị trí sau khi bỏ preamble trước "1.".
+    """
+    slots: List[Optional[str]] = [None] * n
+    found = False
+    for line in out_lines:
+        m = _NUMBERED_RE.match(line)
+        if not m:
+            continue
+        found = True
+        k = int(m.group(1)) - 1
+        text = m.group(2).strip()
+        if 0 <= k < n and slots[k] is None and text:
+            slots[k] = text
+    if not found:
+        lines = list(out_lines)
+        while lines and not lines[0].lstrip().startswith(("1.", "1)", "1、", "1 ")):
+            lines.pop(0)
+        for k, text in enumerate(lines[:n]):
+            slots[k] = text or None
+    return slots
 
 
 def _chunked(seq: List[str], size: int):
@@ -462,19 +555,36 @@ class JaTranslator:
         self,
         source_lines: List[str],
         glossary_terms=None,
+        history: Optional[str] = None,
+        tm_examples: Optional[List[dict]] = None,
     ) -> Optional[List[str]]:
         """Pass 1: dịch literal, giữ keigo/particles/onomatopoeia."""
         glossary_block = _render_glossary(glossary_terms)
         character_block = _render_character_block(self.character_names)
+        history_clean = (history or "").strip()
+        history_block = (
+            f"PREVIOUS TRANSLATED LINES (for pronoun/context reference ONLY, do NOT include in output):\n{history_clean}\n\n"
+            if history_clean else ""
+        )
+        tm_block = ""
+        if tm_examples:
+            ex_lines = [
+                f"- {ex['source_text']} -> {ex['target_text']}"
+                for ex in tm_examples
+                if isinstance(ex, dict) and ex.get("source_text") and ex.get("target_text")
+            ]
+            if ex_lines:
+                tm_block = "SIMILAR TRANSLATED EXAMPLES (reference style):\n" + "\n".join(ex_lines) + "\n\n"
         translations: List[str] = []
 
-        for chunk in _chunked(source_lines, self.chunk_size):
+        for chunk_idx, chunk in enumerate(_chunked(source_lines, self.chunk_size)):
             numbered = _number_lines(chunk)
+            eff_char_block = (character_block + history_block + tm_block) if chunk_idx == 0 else character_block
             prompt = _LITERAL_TEMPLATE.format(
                 system=self.literal_system_prompt,
                 n=len(chunk),
                 glossary_block=glossary_block,
-                character_block=character_block,
+                character_block=eff_char_block,
                 lines=numbered,
             )
             try:
@@ -521,67 +631,52 @@ class JaTranslator:
                     out_lines = [l.strip() for l in raw.strip().split("\n") if l.strip()]
                 except Exception as e:
                     logger.debug(f"Deterministic retry failed: {e}")
-            # shortcut: lọc chỉ giữ các dòng BẮT ĐẦU BẰNG SỐ thứ tự hợp lệ (1., 2., ...).
-            # LLM 8B hay chèn preamble "Dưới đây là..." hoặc trộn Nhật ngoài numbered,
-            # cách này robust hơn drop-preamble đơn lẻ; tránh bug **彼とのセックスが** leak.
-            numbered_re = re.compile(r"^\s*(\d+)\s*[\.\)、]\s*(.*)$")
-            parsed_lines = []
-            for line in out_lines:
-                m = numbered_re.match(line)
-                if m:
-                    idx_str = m.group(1)
-                    text = m.group(2).strip()
-                    parsed_lines.append(text)
-            if not parsed_lines:
-                # LLM không numbered → fallback drop-preamble cũ (cho prompt cũ)
-                while out_lines and not out_lines[0].lstrip().startswith(("1.", "1)", "1、", "1 ")):
-                    out_lines.pop(0)
-                    if not out_lines:
-                        break
-                parsed_lines = out_lines
+            # Ghép theo SỐ THỨ TỰ model trả, không theo vị trí: model gộp/bỏ 1 dòng thì
+            # chỉ dòng đó thiếu (dịch lại riêng), không làm lệch cả phần còn lại của chunk.
+            parsed = _map_numbered(out_lines, len(chunk))
+            chunk_out: List[Optional[str]] = []
             for j, original in enumerate(chunk):
-                if j < len(parsed_lines):
-                    translations.append(_clean_markdown(parsed_lines[j]))
+                if parsed[j]:
+                    chunk_out.append(_clean_markdown(parsed[j]))
                 else:
                     # retry từng dòng bằng prompt literal ngắn
                     single = self._translate_single_literal(original, glossary_terms)
                     # shortcut: nếu retry fail thì return None để pipeline biết retry,
                     # KHÔNG fallback về raw Nhật (gây bug "giữ nguyên bản gốc chưa dịch")
-                    translations.append(single)
+                    chunk_out.append(single)
 
-        # Final validation: nếu hơn 50% kết quả là echo tiếng Nhật → retry toàn bộ chunk
-        # shortcut: chỉ retry khi chunk đủ lớn (≥4 dòng), tránh retry vô tận với single line
-        if len(chunk) >= 4:
-            ja_echo_count = sum(
-                1 for t in translations
-                if t and any('\u3040' <= c <= '\u309f' or '\u30a0' <= c <= '\u30ff' for c in t)
-                and _is_likely_japanese_translation(t)
-            )
-            if ja_echo_count >= len(chunk) * 0.5:
-                logger.warning(
-                    f"JaTranslator.likely JA-echo in literal chunk ({ja_echo_count}/{len(chunk)} lines), "
-                    f"retrying entire chunk with temperature=0"
+            # Final validation: nếu hơn 50% kết quả của CHUNK NÀY là echo tiếng Nhật → retry cả chunk
+            # shortcut: chỉ retry khi chunk đủ lớn (≥4 dòng), tránh retry vô tận với single line
+            if len(chunk) >= 4:
+                ja_echo_count = sum(
+                    1 for t in chunk_out
+                    if t and any('\u3040' <= c <= '\u309f' or '\u30a0' <= c <= '\u30ff' for c in t)
+                    and _is_likely_japanese_translation(t)
                 )
-                retry_prompt = _LITERAL_TEMPLATE.format(
-                    system=self.literal_system_prompt,
-                    n=len(chunk),
-                    glossary_block=glossary_block,
-                    character_block=character_block,
-                    lines=_number_lines(chunk),
-                )
-                try:
-                    raw_retry = self.translator.generate(retry_prompt, temperature=0.0)
-                    retry_out = [l.strip() for l in raw_retry.strip().split("\n") if l.strip()]
-                    retry_parsed = []
-                    for line in retry_out:
-                        m = numbered_re.match(line)
-                        if m:
-                            retry_parsed.append(m.group(2).strip())
-                    if len(retry_parsed) >= len(chunk):
+                if ja_echo_count >= len(chunk) * 0.5:
+                    logger.warning(
+                        f"JaTranslator.likely JA-echo in literal chunk ({ja_echo_count}/{len(chunk)} lines), "
+                        f"retrying entire chunk with temperature=0"
+                    )
+                    retry_prompt = _LITERAL_TEMPLATE.format(
+                        system=self.literal_system_prompt,
+                        n=len(chunk),
+                        glossary_block=glossary_block,
+                        character_block=character_block,
+                        lines=_number_lines(chunk),
+                    )
+                    try:
+                        raw_retry = self.translator.generate(retry_prompt, temperature=0.0)
+                        retry_out = [l.strip() for l in raw_retry.strip().split("\n") if l.strip()]
+                        retry_parsed = _map_numbered(retry_out, len(chunk))
+                        # chỉ thay dòng retry có nội dung; dòng thiếu giữ kết quả cũ
                         for j in range(len(chunk)):
-                            translations[j] = _clean_markdown(retry_parsed[j])
-                except Exception as e:
-                    logger.debug(f"Literal chunk retry failed: {e}")
+                            if retry_parsed[j]:
+                                chunk_out[j] = _clean_markdown(retry_parsed[j])
+                    except Exception as e:
+                        logger.debug(f"Literal chunk retry failed: {e}")
+
+            translations.extend(chunk_out)
 
         return translations if translations else None
 
@@ -789,10 +884,11 @@ class JaTranslator:
         # Chuẩn hoá: nếu JSON có len khác source, chỉ lấy phần overlap
         results: List[dict] = []
         for item in parsed:
-            if not isinstance(item, dict) or "index" not in item:
+            # _QA_TEMPLATE yêu cầu key "id"; "index" là schema cũ
+            if not isinstance(item, dict) or ("index" not in item and "id" not in item):
                 continue
             try:
-                idx_int = int(item.get("index", 0))
+                idx_int = int(item.get("index", item.get("id", 0)))
             except (ValueError, TypeError):
                 continue
             if idx_int < 1 or idx_int > len(source_lines):
@@ -819,6 +915,12 @@ class JaTranslator:
         if not qa_results:
             return translations
         out = list(translations)
+        # shortcut: window >= 4 dòng mà QA chê quá nửa → coi reviewer là nhiễu (ADN-627: 6/6 dòng,
+        # toàn rác), giữ bản polish. Hạ ngưỡng nếu thấy QA đúng ở các window dịch tệ thật.
+        flagged = sum(1 for it in qa_results if not it.get("ok", True))
+        if len(out) >= 4 and flagged > len(out) / 2:
+            logger.warning(f"JaTranslator.apply_qa_results: {flagged}/{len(out)} flagged, ignoring QA for window")
+            return out
         for item in qa_results:
             if item.get("ok", True):
                 continue
@@ -828,8 +930,12 @@ class JaTranslator:
                 raw_id = item.get("index", 0)
             idx = raw_id - 1
             sug = _clean_markdown(item.get("suggestion", "").strip())
-            if 0 <= idx < len(out) and sug:
-                out[idx] = sug
+            if not (0 <= idx < len(out)) or not sug:
+                continue
+            if looks_like_llm_junk(sug, out[idx]):
+                logger.warning(f"JaTranslator.apply_qa_results: dropped junk suggestion for line {idx + 1}: {sug[:50]!r}")
+                continue
+            out[idx] = sug
         return out
 
     # --- helpers ---

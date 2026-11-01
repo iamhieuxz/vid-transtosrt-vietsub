@@ -124,8 +124,96 @@ def test_polish_fallback_keeps_rough_for_kana_lines_in_numbered_list():
     assert result[1] == "bản thô 2"
 
 
+def test_apply_qa_ignores_window_when_most_lines_flagged():
+    """ADN-627 window 15/37: QA chê 6/6 dòng, toàn rác → giữ nguyên bản polish."""
+    t = make_translator()
+    orig = [f"t{i}" for i in range(1, 7)]
+    qa = [{"index": i, "ok": False, "suggestion": f"'s{i}'"} for i in range(1, 7)]
+    assert t.apply_qa_results(orig, qa) == orig
+
+
+def test_apply_qa_drops_note_and_quote_suggestions_keeps_good_ones():
+    t = make_translator()
+    orig = ["a", "b", "c", "d", "e", "f"]
+    qa = [
+        {"index": 1, "ok": False, "suggestion": "GOOD"},
+        {"index": 2, "ok": False, "suggestion": '"Ừ, trông y hệt vậy." (Giữ nguyên nếu ngữ cảnh phù hợp)'},
+        {"index": 3, "ok": False, "suggestion": "'Wow, đúng thật đấy.'"},
+    ]
+    assert t.apply_qa_results(orig, qa) == ["GOOD", "b", "c", "d", "e", "f"]
+
+
+def test_apply_qa_allows_quote_when_original_already_quoted():
+    t = make_translator()
+    qa = [{"index": 1, "ok": False, "suggestion": '"Xin chào"'}]
+    assert t.apply_qa_results(['"Chào"'], qa) == ['"Xin chào"']
+
+
+def test_looks_like_llm_junk():
+    from core.ja_translator import looks_like_llm_junk
+    assert looks_like_llm_junk('"Để anh ấy làm đi." (Nếu ngữ cảnh phù hợp), hoặc "Để anh ấy lo"')
+    assert looks_like_llm_junk("'Dừng lại đi!'")
+    assert not looks_like_llm_junk("Dừng lại đi!")
+    assert not looks_like_llm_junk("")
+
+
+def test_looks_like_llm_note_keeps_quoted_dialogue():
+    """TM dùng hàm này: thoại mở bằng nháy là hợp lệ, chỉ chú thích của model mới bị chặn."""
+    from core.ja_translator import looks_like_llm_note
+    assert not looks_like_llm_note('"Chào anh"')
+    assert looks_like_llm_note('Dừng lại (Giữ nguyên nếu ngữ cảnh phù hợp)')
+
+
+def make_literal_translator(outputs, chunk_size=8):
+    """JaTranslator whose LLM returns `outputs` in order; extra calls return '1. single'."""
+    t = JaTranslator.__new__(JaTranslator)
+    t.translator = MagicMock()
+    t.translator.generate.side_effect = list(outputs) + ["1. single"] * 20
+    t.character_names = []
+    t.chunk_size = chunk_size
+    t.literal_system_prompt = "SYSTEM"
+    return t
+
+
+def test_literal_maps_by_number_when_model_drops_a_line():
+    """Model bỏ dòng 3 → chỉ dòng 3 dịch lại riêng, dòng 4..8 KHÔNG bị lệch (JUR-708 #81-#150)."""
+    raw = "\n".join(f"{n}. VI{n}" for n in [1, 2, 4, 5, 6, 7, 8])
+    t = make_literal_translator([raw, "1. FIXED3"])
+    result = t.literal_translate([f"JA{i}" for i in range(1, 9)])
+    assert result == ["VI1", "VI2", "FIXED3", "VI4", "VI5", "VI6", "VI7", "VI8"]
+
+
+def test_literal_echo_retry_only_overwrites_its_own_chunk():
+    """Chunk cuối toàn echo JA → retry ghi đè đúng chunk cuối, không đụng chunk 1."""
+    c1 = "\n".join(f"{n}. VI{n}" for n in range(1, 9))
+    echo = "\n".join(f"{n}. これは日本語です{n}" for n in range(1, 5))
+    good = "\n".join(f"{n}. RETRY{n}" for n in range(1, 5))
+    t = make_literal_translator([c1, echo, echo, good])
+    result = t.literal_translate([f"JA{i}" for i in range(1, 13)])
+    assert result == [f"VI{i}" for i in range(1, 9)] + [f"RETRY{i}" for i in range(1, 5)]
+
+
+def test_qa_review_reads_id_key_from_template_schema():
+    """_QA_TEMPLATE yêu cầu key 'id' → qa_review phải nhận, và suggestion được áp dụng."""
+    t = make_polish_translator()
+    t.translator.generate.return_value = (
+        '[{"id":1,"ok":false,"issue":"x","suggestion":"FIXED"},{"id":2,"ok":true}]'
+    )
+    qa = t.qa_review(["a", "b"], ["t1", "t2"])
+    assert len(qa) == 2
+    assert t.apply_qa_results(["t1", "t2"], qa) == ["FIXED", "t2"]
+
+
 if __name__ == "__main__":
     tests = [
+        test_apply_qa_ignores_window_when_most_lines_flagged,
+        test_apply_qa_drops_note_and_quote_suggestions_keeps_good_ones,
+        test_apply_qa_allows_quote_when_original_already_quoted,
+        test_looks_like_llm_junk,
+        test_looks_like_llm_note_keeps_quoted_dialogue,
+        test_literal_maps_by_number_when_model_drops_a_line,
+        test_literal_echo_retry_only_overwrites_its_own_chunk,
+        test_qa_review_reads_id_key_from_template_schema,
         test_apply_qa_results_prefers_id_over_index,
         test_apply_qa_results_no_match_keeps_original,
         test_apply_qa_results_fallback_to_index_field,

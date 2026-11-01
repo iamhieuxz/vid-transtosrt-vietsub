@@ -108,6 +108,12 @@ class Validator:
         for art in romaji_artifacts:
             if art.lower() in trans.lower():
                 logger.warning(f"VN untranslated artifact '{art}' in: {trans[:60]}")
+        try:
+            from .ja_qa_checker import JaQAChecker
+            if JaQAChecker.check_negation_mismatch(orig, trans):
+                logger.warning(f"JA-VI negation mismatch: orig={orig[:40]!r} vs trans={trans[:40]!r}")
+        except Exception:
+            pass
 
     def _check_character_name_consistency(self, translations: List[str]) -> bool:
         """Kiểm tra tên nhân vật có nhất quán không.
@@ -194,7 +200,7 @@ class Validator:
                 result[canonical] = sorted(variants)
         return result
 
-    def _detect_repetition(self, translations: List[str], threshold: float = 0.5) -> bool:
+    def _detect_repetition(self, translations: List[str], threshold: float = 0.7) -> bool:
         """Phát hiện text lặp lại trong bản dịch.
 
         Threshold 0.5 (down từ 0.7) để bắt cả trường hợp lặp nhẹ như

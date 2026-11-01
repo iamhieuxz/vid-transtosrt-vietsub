@@ -5,23 +5,68 @@ whisper:
   language: ja
   beam_size: 8
   vad_filter: true
+  vad_threshold: 0.4
   min_silence_duration_ms: 700
-  speech_pad_ms: 300
+  speech_pad_ms: 500
+  audio_filter: highpass=f=80
+  audio_volume: 1.0
+  prompt_names:
+  - マサト
+  - メイ
+  max_speech_duration_s: 15
+  no_speech_threshold: 0.6
+  log_prob_threshold: -1.0
+  compression_ratio_threshold: 2.4
+  condition_on_previous_text: false
 project:
-  name: ADN-780
+  name: JUR-629
   source_lang: Tiếng Nhật (Japanese)
   target_lang: Tiếng Việt (Vietnamese)
-  input_srt: E:/HIDE/JAV/ADN-780.mp4
-  output_srt: E:\HIDE\JAV
+  input_srt: E:\HIDE\JAV\JUR-629\JUR-629.mp4
+  output_srt: E:\HIDE\JAV\JUR-629
 window:
-  size: 6
+  size: 12
   history: 12
   future: 4
+llama_server:
+  enabled: true
+  auto_stop: true
+  stop_reused: true
+  startup_timeout: 180
+  exe: F:\llama\llama.cpp\llama-server.exe
+  model: F:\llama\models\Qwen3.5-9B-DefiantFable-MTP-IQ4_XS.gguf
+  alias: qwen35-9b-iq4
+  host: 127.0.0.1
+  port: 8180
+  ctx: 16384
+  ubatch: 128
+  ngl: 99
+  parallel: 1
+  flash_attn: true
+  kv_cache_type: q8_0
+  jinja: true
+  reasoning: 'off'
+  reasoning_budget: 0
+  temperature: 0.2
+  repeat_penalty: 1.0
+  spec:
+    type: draft-mtp
+    draft_n_max: 1
+  log_dir: F:\llama\logs
 translation:
   mode: uncen
+  backend: llama
   literal_mode: false
   chunk_size: 3
 models:
+  llama:
+    name: qwen35-9b-iq4
+    ollama_url: http://localhost:8180/v1/chat/completions
+    temperature: 0.05
+    repeat_penalty: 1.0
+    num_ctx: 16384
+    num_predict: 768
+    timeout: 300
   default:
     name: huihui_ai/qwen3-abliterated:8b-v2
     ollama_url: http://localhost:11434/api/generate
@@ -47,6 +92,7 @@ models:
     num_predict: 1024
     timeout: 180
 pipeline:
+  skip_precheck: false
   enable_glossary: true
   max_retries: 5
   retry_delay: 2
@@ -62,16 +108,16 @@ pipeline:
   learn_glossary_min_ratio: 0.5
   learn_glossary_max_candidates: 50
 model:
-  name: huihui_ai/qwen3-abliterated:8b-v2
-  ollama_url: http://localhost:11434/api/generate
+  name: qwen35-9b-iq4
+  ollama_url: http://localhost:8180/v1/chat/completions
   temperature: 0.05
-  repeat_penalty: 1.3
-  num_ctx: 4096
-  num_predict: 1024
+  repeat_penalty: 1.0
+  num_ctx: 16384
+  num_predict: 768
   timeout: 300
 ja_context:
   enabled: false
-  window_size: 18
+  window_size: 12
   scene_review_size: 36
   worker_c_enabled: false
 ja_trans2:
@@ -79,8 +125,8 @@ ja_trans2:
   batch_size: 5
 character_names: []
 recent_projects:
-- E:/HIDE/JAV/ADN-780.mp4
-- E:/HIDE/JAV/NSFS-373.mp4
-- E:/HIDE/JAV/ADN-627.mp4
+- E:/HIDE/JAV/JUR-624.mp4
 - E:/HIDE/JAV/JUR-629.mp4
-- E:/HIDE/JAV/JUQ-799.mp4
+- E:/HIDE/JAV/ADN-627.mp4
+- E:/HIDE/JAV/JUR-708.mp4
+- E:/HIDE/JAV/NSFS-373.mp4

@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import time
 from typing import List, Optional
 
@@ -59,7 +60,8 @@ Phân tích đoạn phụ đề tiếng Nhật sau (gồm {n} dòng). Trích xu�
 5. **summary**: Tóm tắt tình huống trong đoạn này (1-2 câu, tiếng Việt).
 
 QUY TẮC ĐẦU RA:
-- Trả về ĐÚNG JSON object (không phải array), không kèm text ngoài JSON.
+- Mọi giá trị chuỗi (setting, summary, tên vai...) viết bằng TIẾNG VIỆT, không dùng chữ Nhật.
+{names_rule}- Trả về ĐÚNG JSON object (không phải array), không kèm text ngoài JSON.
 - Schema: {{"speakers": [...], "pronouns_map": {{...}}, "tone": "...", "setting": "...", "summary": "..."}}
 - Nếu đoạn quá ngắn / không có thoại → trả JSON rỗng (speakers=[], tone="unknown", setting="unknown", summary="").
 
@@ -121,10 +123,12 @@ def _validate_context_schema(result: dict) -> Optional[dict]:
         if not (isinstance(mapping.get("self"), (type(None), str))
                 and isinstance(mapping.get("other"), (type(None), str))):
             return None
-    # tone, setting, summary: str
+    # tone, setting, summary: str; setting/summary phải là tiếng Việt (model hay trả tiếng Nhật)
     for key in ("tone", "setting", "summary"):
         val = result.get(key)
         if not isinstance(val, str):
+            return None
+        if key != "tone" and _JA_CHAR_RE.search(val):
             return None
     return {
         "speakers": speakers,
@@ -132,6 +136,23 @@ def _validate_context_schema(result: dict) -> Optional[dict]:
         "tone": result["tone"],
         "setting": result["setting"],
         "summary": result["summary"],
+    }
+
+
+_JA_CHAR_RE = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff]")
+_EMPTY_CONTEXT = {"speakers": [], "pronouns_map": {}, "tone": "unknown", "setting": "unknown", "summary": ""}
+
+
+def _merge_contexts(a: dict, b: dict) -> dict:
+    """Gộp kết quả 2 nửa cửa sổ thành 1 context (speakers hợp, pronouns b ghi đè a)."""
+    va, vb = _validate_context_schema(a), _validate_context_schema(b)
+    known = lambda x: x if x != "unknown" else ""
+    return {
+        "speakers": list(dict.fromkeys(va["speakers"] + vb["speakers"])),
+        "pronouns_map": {**va["pronouns_map"], **vb["pronouns_map"]},
+        "tone": known(va["tone"]) or vb["tone"],
+        "setting": known(va["setting"]) or vb["setting"],
+        "summary": " ".join(s for s in (va["summary"], vb["summary"]) if s),
     }
 
 
@@ -152,10 +173,19 @@ class JaContextAnalyzer:
         Timeout mỗi call model (giây).
     """
 
-    def __init__(self, translator, context_window_size: int = 18, timeout_per_window: int = 60):
+    def __init__(self, translator, context_window_size: int = 12, timeout_per_window: int = 60):
         self.translator = translator
         self.context_window_size = context_window_size
         self.timeout_per_window = timeout_per_window
+        # Danh sách tên đã trích từ dòng JA (fugashi); pipeline gán trước khi analyze_project
+        self.character_names: List[dict] = []
+
+    def _names_rule(self) -> str:
+        names = [e["canonical"] for e in self.character_names if e.get("canonical")]
+        if not names:
+            return "- Không biết tên thì gọi \"người đàn ông\" / \"người phụ nữ\", KHÔNG tự đặt tên.\n"
+        return (f"- Chỉ được dùng các tên này: {', '.join(names)}. Người nào khác gọi là "
+                "\"người đàn ông\" / \"người phụ nữ\", KHÔNG tự đặt tên mới.\n")
 
     def analyze_project(self, project_id: int, db) -> dict:
         """Scan toàn bộ project, tạo context cho từng context-window.
@@ -240,16 +270,36 @@ class JaContextAnalyzer:
         return stats
 
     def _analyze_one_window(self, source_lines: List[str]) -> Optional[dict]:
-        """Gọi model 1 lần để phân tích 1 context-window."""
+        """Phân tích 1 context-window; rỗng/sai schema thì tăng temp rồi chia đôi cửa sổ."""
+        # Bỏ cue không có kana/kanji (Whisper lẫn 'Vâng', 'Cảm ơn'...) để khỏi sinh nhân vật bịa
+        lines = [l for l in source_lines if _JA_CHAR_RE.search(l)]
+        if not lines:
+            return dict(_EMPTY_CONTEXT)
+        # shortcut: temp 0 retry y hệt vô ích -> thử 0.0 rồi 0.3; chia đôi tới tối thiểu 3 dòng
+        for temp in (0.0, 0.3):
+            result = self._call_model(lines, temp)
+            if result is not None and _validate_context_schema(result) is not None:
+                return result
+        if len(lines) <= 3:
+            return None
+        mid = len(lines) // 2
+        halves = [self._analyze_one_window(lines[:mid]), self._analyze_one_window(lines[mid:])]
+        if any(h is None for h in halves):
+            return None
+        return _merge_contexts(*halves)
+
+    def _call_model(self, source_lines: List[str], temperature: float) -> Optional[dict]:
+        """Gọi model 1 lần (không retry nội bộ của translator)."""
         numbered = _number_lines(source_lines)
         prompt = _CONTEXT_ANALYSIS_TEMPLATE.format(
             system=_SYSTEM_PROMPT,
             n=len(source_lines),
+            names_rule=self._names_rule(),
             lines=numbered,
         )
         start = time.time()
         try:
-            raw = self.translator.generate(prompt, temperature=0.0)
+            raw = self.translator.generate(prompt, temperature=temperature, _retries=0)
         except Exception as e:
             logger.warning(f"JaContextAnalyzer: generate failed: {e}")
             return None

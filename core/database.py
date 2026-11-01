@@ -120,6 +120,13 @@ class Database:
         if 'content_hash' not in cols:
             c.execute("ALTER TABLE window_contexts ADD COLUMN content_hash TEXT")
 
+        # Hồ sơ phim (thể loại, bối cảnh, tóm tắt, vai) tổng hợp từ window_contexts; 1 dòng / project
+        c.execute('''CREATE TABLE IF NOT EXISTS film_profiles (
+            project_id INTEGER PRIMARY KEY,
+            genre TEXT, setting TEXT, synopsis TEXT,
+            roles_json TEXT, names_json TEXT, source_hash TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+
         c.execute('''CREATE TABLE IF NOT EXISTS translation_errors (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER,
@@ -141,6 +148,12 @@ class Database:
             confidence REAL DEFAULT 0.0,
             status TEXT DEFAULT 'active',
             context_hint TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+
+        c.execute('''CREATE TABLE IF NOT EXISTS project_ngram_cache (
+            project_id INTEGER PRIMARY KEY,
+            item_count INTEGER DEFAULT 0,
+            ngrams_json TEXT,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
 
         conn.commit()
@@ -205,6 +218,22 @@ class Database:
         with self._get_connection() as conn:
             rows = conn.execute("SELECT * FROM subtitle_items WHERE project_id=? AND sub_index BETWEEN ? AND ? ORDER BY sub_index",
                                 (project_id, start_sub, end_sub)).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_items_by_pos_range(self, project_id, start_pos: int, end_pos: int):
+        """Lấy các subtitle_items theo vị trí 0-based [start_pos..end_pos] (inclusive)
+        đã sắp xếp theo sub_index, tránh phải gọi get_all_items() ở mỗi window.
+        """
+        start_pos = max(0, int(start_pos))
+        end_pos = int(end_pos)
+        if end_pos < start_pos:
+            return []
+        limit = (end_pos - start_pos) + 1
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM subtitle_items WHERE project_id=? ORDER BY sub_index LIMIT ? OFFSET ?",
+                (project_id, limit, start_pos),
+            ).fetchall()
             return [dict(r) for r in rows]
 
     # --- Windows ---
@@ -383,6 +412,120 @@ class Database:
                          (source_lang, target_lang, source_text, target_text, confidence, len(source_text), domain))
             conn.commit()
 
+    def save_translation_memory_batch(self, entries, min_char_count: int = 1) -> int:
+        """Lưu hàng loạt bản ghi vào translation_memory trong 1 transaction duy nhất.
+
+        Parameters
+        ----------
+        entries : list of tuple
+            Mỗi phần tử dạng (source_lang, target_lang, source_text, target_text, domain, confidence).
+        min_char_count : int
+            Độ dài tối thiểu của source_text để được lưu.
+        """
+        if not entries:
+            return 0
+        rows_to_upsert = []
+        for item in entries:
+            source_lang, target_lang, source_text, target_text, domain, confidence = item
+            if not source_text or len(source_text) < min_char_count:
+                continue
+            rows_to_upsert.append(
+                (source_lang, target_lang, source_text, target_text, float(confidence), len(source_text), domain)
+            )
+        if not rows_to_upsert:
+            return 0
+        with self._get_connection() as conn:
+            conn.executemany(
+                '''INSERT INTO translation_memory
+                   (source_lang, target_lang, source_text, target_text, confidence, char_count, domain)
+                   VALUES (?,?,?,?,?,?,?)
+                   ON CONFLICT(source_lang, target_lang, source_text, domain) DO UPDATE SET
+                   target_text = CASE
+                       WHEN excluded.confidence > translation_memory.confidence THEN excluded.target_text
+                       ELSE translation_memory.target_text
+                   END,
+                   confidence = MAX(translation_memory.confidence, excluded.confidence),
+                   usage_count = translation_memory.usage_count + 1,
+                   last_used = CURRENT_TIMESTAMP''',
+                rows_to_upsert,
+            )
+            conn.commit()
+        self._tm_corpus_cache = None
+        return len(rows_to_upsert)
+
+    def find_similar_tm_examples(
+        self,
+        source_lang: str,
+        target_lang: str,
+        query_lines: list,
+        domain: str = 'global',
+        top_k: int = 3,
+        min_score: float = 65.0,
+        max_score: float = 98.0,
+    ) -> list:
+        """Tìm các cặp câu (source_text, target_text) tương đồng cao trong TM bằng rapidfuzz
+        để làm Dynamic Few-Shot examples cho LLM.
+        """
+        if not query_lines or top_k <= 0:
+            return []
+        try:
+            from rapidfuzz import fuzz, process
+        except ImportError:
+            return []
+
+        cache_key = (source_lang, target_lang, domain or 'global')
+        cached = getattr(self, '_tm_corpus_cache', None)
+        now = time.time()
+        if cached and cached.get('key') == cache_key and (now - cached.get('ts', 0)) < 60:
+            corpus_map = cached['map']
+            choices = cached['choices']
+        else:
+            with self._get_connection() as conn:
+                rows = conn.execute(
+                    '''SELECT source_text, target_text, confidence, usage_count
+                       FROM translation_memory
+                       WHERE source_lang=? AND target_lang=? AND domain IN (?, 'global')
+                         AND confidence >= 0.90 AND char_count BETWEEN 4 AND 60
+                       ORDER BY CASE WHEN domain=? THEN 0 ELSE 1 END,
+                                confidence DESC, usage_count DESC
+                       LIMIT 1500''',
+                    (source_lang, target_lang, domain or 'global', domain or 'global'),
+                ).fetchall()
+            corpus_map = {}
+            for r in rows:
+                s = (r['source_text'] or '').strip()
+                t = (r['target_text'] or '').strip()
+                if s and t and s not in corpus_map:
+                    corpus_map[s] = t
+            choices = list(corpus_map.keys())
+            self._tm_corpus_cache = {'key': cache_key, 'ts': now, 'map': corpus_map, 'choices': choices}
+
+        if not choices:
+            return []
+
+        best_by_src = {}
+        seen_queries = set()
+        for q in query_lines:
+            q_clean = (q or '').strip()
+            if len(q_clean) < 4 or q_clean in seen_queries:
+                continue
+            seen_queries.add(q_clean)
+            matches = process.extract(
+                q_clean, choices, scorer=fuzz.ratio, limit=2, score_cutoff=min_score
+            )
+            for match_src, score, _ in matches:
+                if score > max_score or match_src == q_clean:
+                    continue
+                if match_src not in best_by_src or score > best_by_src[match_src]['score']:
+                    best_by_src[match_src] = {
+                        'source_text': match_src,
+                        'target_text': corpus_map[match_src],
+                        'score': round(float(score), 1),
+                    }
+
+        ranked = sorted(best_by_src.values(), key=lambda x: -x['score'])
+        return ranked[:top_k]
+
     # --- Glossary ---
     def get_glossary(self, project_id):
         with self._get_connection() as conn:
@@ -414,6 +557,23 @@ class Database:
                          (project_id, context_window_index, start_pos, end_pos,
                           speakers_json, pronouns_map, tone, setting, summary, status, content_hash))
             conn.commit()
+
+    def save_film_profile(self, project_id, genre, setting, synopsis, roles_json, names_json, source_hash):
+        with self._get_connection() as conn:
+            conn.execute('''INSERT INTO film_profiles
+                            (project_id, genre, setting, synopsis, roles_json, names_json, source_hash)
+                            VALUES (?,?,?,?,?,?,?)
+                            ON CONFLICT(project_id) DO UPDATE SET
+                            genre=excluded.genre, setting=excluded.setting, synopsis=excluded.synopsis,
+                            roles_json=excluded.roles_json, names_json=excluded.names_json,
+                            source_hash=excluded.source_hash, created_at=CURRENT_TIMESTAMP''',
+                         (project_id, genre, setting, synopsis, roles_json, names_json, source_hash))
+            conn.commit()
+
+    def get_film_profile(self, project_id):
+        with self._get_connection() as conn:
+            row = conn.execute('SELECT * FROM film_profiles WHERE project_id=?', (project_id,)).fetchone()
+            return dict(row) if row else None
 
     def get_window_context(self, project_id, context_window_index):
         """Lấy context của 1 context-window cụ thể. Trả None nếu chưa có."""
@@ -535,3 +695,33 @@ class Database:
                 (status, min_confidence, min_freq),
             ).fetchall()
             return [dict(r) for r in rows]
+
+    def get_project_ngram_cache(self, project_id: int, item_count: int):
+        """Lấy danh sách (ja_ngrams, vi_ngrams) đã cache của project nếu item_count khớp."""
+        import json as _json
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT item_count, ngrams_json FROM project_ngram_cache WHERE project_id=?",
+                (project_id,),
+            ).fetchone()
+            if not row or row['item_count'] != item_count or not row['ngrams_json']:
+                return None
+            try:
+                return _json.loads(row['ngrams_json'])
+            except Exception:
+                return None
+
+    def save_project_ngram_cache(self, project_id: int, item_count: int, ngrams_data: list):
+        """Lưu danh sách (ja_ngrams, vi_ngrams) đã tách từ của project để tránh chạy lại MeCab."""
+        import json as _json
+        with self._get_connection() as conn:
+            conn.execute(
+                '''INSERT INTO project_ngram_cache (project_id, item_count, ngrams_json)
+                   VALUES (?,?,?)
+                   ON CONFLICT(project_id) DO UPDATE SET
+                   item_count=excluded.item_count,
+                   ngrams_json=excluded.ngrams_json,
+                   updated_at=CURRENT_TIMESTAMP''',
+                (project_id, item_count, _json.dumps(ngrams_data, ensure_ascii=False)),
+            )
+            conn.commit()

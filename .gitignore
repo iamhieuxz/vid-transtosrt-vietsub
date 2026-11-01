@@ -35,9 +35,24 @@ subtitle_translator.log
 
 # Per-project temporary learned glossary files (keep global glossary_learned.yaml tracked)
 glossary_*.learned.yaml
+glossary_*.characters.yaml
+glossaries/*.learned.yaml
+glossaries/*.characters.yaml
 
-# Temporary test outputs
+# Temporary test outputs & local scratch files
 _test*
+_chk.py
+_compare_*/
+_export_*/
+_gui.txt
+_review_diff*.txt
+*.log
+*_report.txt
+project_names.txt
+test_results.json
+run_nsfs373_rerun.bat
+check_uncen_rerun.py
+data/
 test-e2e*/
 test-dbg*/
 

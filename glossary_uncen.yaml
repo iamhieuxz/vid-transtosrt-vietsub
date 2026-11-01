@@ -282,3 +282,29 @@
 - source_term: 膝
   target_term: đầu gối
   context_hint: cơ thể
+
+- source_term: ネトラレ
+  target_term: ngoại tình cắm sừng
+  context_hint: thể loại NTR (cắm sừng/bị người khác quan hệ với vợ mình), KHÔNG phiên âm thành "nơ-tơ-ra-lê"
+- source_term: NTR
+  target_term: ngoại tình cắm sừng
+  context_hint: thể loại NTR
+- source_term: オナネタ
+  target_term: tư liệu thủ dâm
+  context_hint: hình ảnh/câu chuyện dùng để thủ dâm (onani neta), KHÔNG bỏ qua
+- source_term: 値引き
+  target_term: giảm giá
+  context_hint: giảm giá tiền, KHÔNG dịch "ngủ kéo" (khi Whisper ghi nhầm thành 寝引き)
+
+- source_term: 媚薬
+  target_term: thuốc kích dục
+  context_hint: thuốc kích thích ham muốn tình dục, KHÔNG dịch "thuốc làm đẹp" hay "thuốc mỹ nhân"
+- source_term: 美薬
+  target_term: thuốc kích dục
+  context_hint: Whisper ghi nhầm chữ Hán từ 媚薬 (biyaku), dịch "thuốc kích dục", KHÔNG dịch "thuốc làm đẹp"
+- source_term: 美役
+  target_term: thuốc kích dục
+  context_hint: Whisper ghi nhầm chữ Hán từ 媚薬 (biyaku), dịch "thuốc kích dục", KHÔNG dịch "vai diễn" hay "nhân vật"
+- source_term: 友達
+  target_term: bạn bè
+  context_hint: bạn bè bình thường ở trường học/xã hội, KHÔNG dịch "bạn tình"

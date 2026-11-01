@@ -25,34 +25,55 @@ logger = logging.getLogger(__name__)
 class CharacterRegistry:
     """Build + lookup character name mapping toàn phim."""
 
-    def __init__(self, db, project_id: int):
+    def __init__(self, db, project_id: int, character_names: Optional[List[dict]] = None):
         self.db = db
         self.project_id = project_id
+        self.injected_character_names = character_names
         self._cache: Optional[Dict[str, str]] = None
         self._cache_hash: Optional[str] = None
 
     def build(self) -> Dict[str, str]:
-        """Gom speakers từ tất cả window_contexts (status=completed).
+        """Gom speakers từ tất cả window_contexts, config.character_names VÀ
+        tự động trích xuất từ subtitle_items bằng fugashi + pykakasi (không cần Worker A).
 
         Trả về dict {ja_name: canonical_vi_name}.
-        Quy tắc chọn canonical:
-          1. Nếu có alias trong config.character_names → dùng canonical từ đó
-          2. Nếu không → dùng romaji đầu tiên gặp (ưu tiên có dấu hoa đầu)
-          3. Cùng tên Kanji xuất hiện nhiều dạng → ưu tiên Hiragana (ít lỗi Whisper)
         """
         if self._cache is not None:
             return self._cache
 
-        # Load character_names từ config
-        canonical_map = self._load_canonical_map()
+        from .ja_qa_checker import extract_character_names_from_lines, ja_to_hepburn
+
+        # 1. Tự động trích xuất thêm từ subtitle_items nếu DB có get_all_items
+        raw_lines: List[str] = []
+        if hasattr(self.db, "get_all_items"):
+            try:
+                items = self.db.get_all_items(self.project_id) or []
+                if isinstance(items, list):
+                    raw_lines = [
+                        (it.get("original_text") or "")
+                        for it in items
+                        if isinstance(it, dict) and it.get("original_text")
+                    ]
+            except Exception:
+                raw_lines = []
+
+        # Load character_names từ config + injected + auto-extracted
+        canonical_map = self._load_canonical_map(raw_lines=raw_lines)
 
         # Gom speakers + cách viết + tần suất
         ja_counter: Counter = Counter()
         ja_to_aliases: Dict[str, Counter] = {}
 
-        contexts = self.db.list_context_windows(self.project_id)
+        if hasattr(self.db, "list_context_windows"):
+            try:
+                contexts = self.db.list_context_windows(self.project_id) or []
+            except Exception:
+                contexts = []
+        else:
+            contexts = []
+
         for ctx in contexts:
-            if ctx.get("status") != "completed":
+            if not isinstance(ctx, dict) or ctx.get("status") != "completed":
                 continue
             speakers_json = ctx.get("speakers_json") or "[]"
             try:
@@ -64,36 +85,34 @@ class CharacterRegistry:
                     continue
                 sp = sp.strip()
                 ja_counter[sp] += 1
-                # Track các dạng viết khác nhau cho cùng tên
-                # (vd: あゆみ / Ayumi / アユミ) — match bằng canonical
                 canonical_key = self._find_canonical_key(sp, canonical_map)
                 if canonical_key:
                     ja_to_aliases.setdefault(canonical_key, Counter())[sp] += 1
+
+        # Bổ sung trực tiếp mọi alias tiếng Nhật từ canonical_map (hoạt động ngay cả khi Worker A tắt)
+        for c_key, entry in canonical_map.items():
+            for alias in entry.get("aliases", []) or []:
+                if alias and re.search(r'[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff]', alias):
+                    ja_counter[alias] += 1
 
         # Build mapping
         result: Dict[str, str] = {}
         for sp, count in ja_counter.items():
             canonical_key = self._find_canonical_key(sp, canonical_map)
             if canonical_key:
-                # Có trong config → dùng canonical
                 result[sp] = canonical_map[canonical_key]["canonical"]
             else:
-                # Không có trong config → dùng chính nó (giữ romaji)
-                # Skip nếu chỉ là Kanji/Hiragana thuần (sẽ gặp issue khi dịch)
                 if re.match(r'^[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff]+$', sp):
-                    # Pure JA — không thể làm canonical VI được, giữ nguyên
-                    # để LLM tự quyết định (warning log)
-                    logger.debug(
-                        f"CharacterRegistry: pure-JA name '{sp}' has no canonical, "
-                        f"keeping as-is"
-                    )
-                result[sp] = sp
+                    hep = ja_to_hepburn(sp)
+                    result[sp] = hep if hep else sp
+                else:
+                    result[sp] = sp
 
         # Cache với hash
         self._cache = result
         self._cache_hash = self._compute_hash(result)
         logger.info(
-            f"CharacterRegistry: {len(result)} unique characters in project {self.project_id}"
+            f"CharacterRegistry: {len(result)} unique character alias(es) in project {self.project_id}"
         )
         return result
 
@@ -125,13 +144,36 @@ class CharacterRegistry:
             return None
 
         target_lower = target_line.lower()
-        for ja_name, canonical_vi in self._cache.items():
-            if ja_name not in source_line:
+        # Ưu tiên khớp tên tiếng Nhật dài trước (VD: '吉田さん' -> '吉田' trước '田')
+        # và ghi nhận các khoảng vị trí (span) đã khớp để tên ngắn con không khớp chồng lên tên dài!
+        sorted_items = sorted(self._cache.items(), key=lambda kv: -len(kv[0]))
+        covered_spans: List[Tuple[int, int]] = []
+
+        for ja_name, canonical_vi in sorted_items:
+            if not ja_name or ja_name not in source_line:
                 continue
-            # Có mention tên JA trong source
+            # Tìm tất cả vị trí xuất hiện của ja_name trong source_line chưa bị tên dài hơn bao phủ
+            uncovered_positions = []
+            start_pos = 0
+            while True:
+                idx = source_line.find(ja_name, start_pos)
+                if idx < 0:
+                    break
+                end_pos = idx + len(ja_name)
+                is_covered = any(cs <= idx and end_pos <= ce for cs, ce in covered_spans)
+                if not is_covered:
+                    uncovered_positions.append((idx, end_pos))
+                start_pos = idx + 1
+
+            if not uncovered_positions:
+                continue
+            covered_spans.extend(uncovered_positions)
+
+            # Có mention tên JA trong source — kiểm tra theo ranh giới từ (\b) để 'miku' không khớp nhầm 'mikuru'
             canonical_lower = canonical_vi.lower()
-            if canonical_lower in target_lower:
-                continue  # OK — đã có canonical
+            if re.search(r'\b' + re.escape(canonical_lower) + r'\b', target_lower):
+                continue  # OK — đã có canonical đúng từ
+
             # Tìm các dạng sai
             wrong_forms = self._find_wrong_forms(ja_name, canonical_vi, target_line)
             if wrong_forms:
@@ -146,7 +188,9 @@ class CharacterRegistry:
 
             # Cover case Takao/Kawaguchi: target có canonical của 1 nhân vật KHÁC
             # trong config (alias hoặc also_known_as) nhưng không có canonical này
-            aka_wrong = self._find_wrong_forms_with_aka(ja_name, canonical_vi, target_line)
+            aka_wrong = self._find_wrong_forms_with_aka(
+                ja_name, canonical_vi, target_line, source_line=source_line
+            )
             if aka_wrong:
                 fixed = target_line
                 for wrong in aka_wrong:
@@ -156,7 +200,13 @@ class CharacterRegistry:
                     return fixed
         return None
 
-    def _find_wrong_forms_with_aka(self, ja_name: str, canonical: str, target: str) -> List[str]:
+    def _find_wrong_forms_with_aka(
+        self,
+        ja_name: str,
+        canonical: str,
+        target: str,
+        source_line: str = "",
+    ) -> List[str]:
         """Tìm các dạng sai bao gồm cả 'also_known_as' từ config.
 
         Trường hợp: source JA = "川口くん" (→ Kawaguchi), target VI = "Takao"
@@ -174,18 +224,29 @@ class CharacterRegistry:
         if key in canonical_map:
             aka = canonical_map[key].get("also_known_as", []) or []
 
-        # Tìm TẤT CẢ canonical names trong target
+        # Nếu có also_known_as được cấu hình tường minh cho nhân vật này -> kiểm tra trước
+        for a in aka:
+            if a and a.lower() != canonical_lower:
+                if re.search(r'\b' + re.escape(a.lower()) + r'\b', target_lower):
+                    wrong.append(a)
+
+        # Kiểm tra các nhân vật khác trong canonical_map (chỉ khi nhân vật đó KHÔNG xuất hiện trong câu nguồn)
         for ck, entry in canonical_map.items():
             entry_canonical = entry["canonical"]
             if entry_canonical.lower() == canonical_lower:
                 continue  # Bỏ chính nó
-            # Check từng alias (kể cả also_known_as) trong target
             all_aliases = entry.get("aliases", []) or []
             all_akas = entry.get("also_known_as", []) or []
+            # Nếu nhân vật này cũng có mặt trong câu gốc JA (câu có 2 nhân vật), tuyệt đối không ghi đè tên họ!
+            if source_line and any(a and a in source_line for a in all_aliases):
+                continue
+            # Chỉ coi là nhầm lẫn giữa 2 nhân vật nếu có liên kết also_known_as
+            if not aka and not all_akas:
+                continue
             for alias in all_aliases + all_akas:
-                if alias.lower() == canonical_lower:
+                if not alias or alias.lower() == canonical_lower:
                     continue
-                if alias.lower() in target_lower and canonical_lower not in target_lower:
+                if re.search(r'\b' + re.escape(alias.lower()) + r'\b', target_lower) and canonical_lower not in target_lower:
                     wrong.append(alias)
         return wrong
 
@@ -208,28 +269,56 @@ class CharacterRegistry:
                 return key
         return None
 
-    def _load_canonical_map(self) -> Dict[str, dict]:
-        """Load character_names từ config.yaml. Cache per-call."""
+    def _load_canonical_map(self, raw_lines: Optional[List[str]] = None) -> Dict[str, dict]:
+        """Load character_names từ config.yaml + injected + auto-extracted. Cache per-instance."""
+        if getattr(self, "_canonical_map_cache", None) is not None and not raw_lines:
+            return self._canonical_map_cache
         try:
             import yaml
             with open("config.yaml", "r", encoding="utf-8") as f:
-                cfg = yaml.safe_load(f)
+                cfg = yaml.safe_load(f) or {}
         except Exception as e:
             logger.warning(f"CharacterRegistry: failed to load config.yaml: {e}")
-            return {}
+            cfg = {}
+
+        entries = list(cfg.get("character_names", []) or [])
+        if self.injected_character_names:
+            entries.extend(self.injected_character_names)
+        if raw_lines:
+            try:
+                from .ja_qa_checker import extract_character_names_from_lines
+                entries = extract_character_names_from_lines(raw_lines, existing_names=entries)
+            except Exception as e:
+                logger.debug(f"CharacterRegistry auto-extract skipped: {e}")
+
         result = {}
-        for entry in cfg.get("character_names", []) or []:
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
             canonical = entry.get("canonical", "").strip()
             if not canonical:
                 continue
-            aliases = entry.get("aliases", []) or []
-            also_known_as = entry.get("also_known_as", []) or []
-            # Key = canonical thường (lowercase) để match alias
-            result[canonical.lower()] = {
-                "canonical": canonical,
-                "aliases": aliases,
-                "also_known_as": also_known_as,
-            }
+            aliases = list(entry.get("aliases", []) or [])
+            mistaken = list(entry.get("mistaken_aliases", []) or [])
+            for m in mistaken:
+                if m and m not in aliases:
+                    aliases.append(m)
+            also_known_as = list(entry.get("also_known_as", []) or [])
+            key = canonical.lower()
+            if key in result:
+                for a in aliases:
+                    if a not in result[key]["aliases"]:
+                        result[key]["aliases"].append(a)
+                for aka in also_known_as:
+                    if aka not in result[key]["also_known_as"]:
+                        result[key]["also_known_as"].append(aka)
+            else:
+                result[key] = {
+                    "canonical": canonical,
+                    "aliases": aliases,
+                    "also_known_as": also_known_as,
+                }
+        self._canonical_map_cache = result
         return result
 
     def _find_wrong_forms(self, ja_name: str, canonical: str, target: str) -> List[str]:
@@ -246,21 +335,20 @@ class CharacterRegistry:
         wrong = []
         canonical_lower = canonical.lower()
 
+        canonical_present = bool(re.search(r'\b' + re.escape(canonical_lower) + r'\b', target_lower))
+
         # (1) Alias check từ config
         if key in canonical_map:
             for alias in canonical_map[key]["aliases"]:
                 if alias.lower() == canonical_lower:
                     continue
-                if alias.lower() in target_lower:
-                    # Có alias khác canonical trong target → có thể sai
-                    # Nhưng chỉ flag nếu KHÔNG có canonical cùng
-                    # (đã check ở validate_translation, nhưng đảm bảo an toàn)
-                    if canonical_lower not in target_lower:
+                if re.search(r'\b' + re.escape(alias.lower()) + r'\b', target_lower):
+                    if not canonical_present and alias not in wrong:
                         wrong.append(alias)
 
         # (2) Substring rút gọn: kiểm tra word nào trong target bắt đầu
         # bằng 2 ký tự đầu của canonical nhưng KHÔNG phải canonical
-        if canonical_lower not in target_lower and len(canonical) >= 4:
+        if not canonical_present and len(canonical) >= 4:
             words = re.findall(r'\b[A-Za-z]{3,}\b', target)
             for w in words:
                 if w.lower() == canonical_lower:
@@ -275,10 +363,26 @@ class CharacterRegistry:
                                    'mui', 'hon', 'vao', 'ra', 'len', 'xuong', 'nha',
                                    'san', 'tan', 'can', 'dam', 'yen', 'gio', 'ngay',
                                    'dem', 'sang', 'trua', 'toi', 'den', 'di', 'den',
-                                   'kia', 'nay', 'do'}:
+                                   'kia', 'nay', 'do', 'miku', 'sato', 'tsuyoshi'}:
+                        if w_lower != canonical_lower:
+                            pass
                         continue
                     if w not in wrong:
                         wrong.append(w)
+
+        # (3) Fuzzy similarity (rapidfuzz) cho các từ viết hoa không dấu tiếng Việt gần giống canonical
+        if canonical_lower not in target_lower and len(canonical) >= 4:
+            try:
+                from rapidfuzz import fuzz
+                cap_words = re.findall(r'\b[A-Z][a-z]{2,11}\b', target)
+                for w in cap_words:
+                    w_low = w.lower()
+                    if w_low == canonical_lower or w in wrong:
+                        continue
+                    if fuzz.ratio(w_low, canonical_lower) >= 68:
+                        wrong.append(w)
+            except Exception:
+                pass
         return wrong
 
     def _compute_hash(self, mapping: Dict[str, str]) -> str:

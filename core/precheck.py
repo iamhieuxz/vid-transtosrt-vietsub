@@ -17,23 +17,15 @@ WHISPER_COMMON_MISTAKES = {
     "生態室": "治療室 (phòng trị liệu)",
     "腹見": "お腹見せ (cho xem bụng) - KHÔNG PHẢI 'kiểm tra bụng'",
     "腹見なさい": "Câu khiêu dâm: 'cho tôi xem/ấn vào bụng em'",
-    "旦那": "chồng / ông chủ",
-    "かゆこ": "Tên riêng - giữ nguyên Kachiko",
-    "たけお": "Tên riêng - giữ nguyên Takao",
-    "高田": "Tên riêng - giữ nguyên Takada",
-    "タケホー": "Tên riêng - giữ nguyên Takesho/Takao",
-    "あゆみ": "Tên riêng - giữ nguyên Ayumi",
+    "旦那": "anh / chồng",
     "二階": "tầng hai",
     "奥の部屋": "phòng trong cùng",
-    "つなわたり": "đi về phía trước",
-    "ビールある": "có bia rồi",
-    "家計測": "quản lý tài chính gia đình",
+    "つなわたり": "đi trên dây / mạo hiểm",
     "生態師": "整体師 (thầy trị liệu)",
-    "素顔": "sức mạnh thật / khuôn mặt thật",
+    "素顔": "khuôn mặt thật",
     "支持": "hỗ trợ / ủng hộ",
     "家にいるとき": "khi ở nhà",
     "末っ子": "con út",
-    "旦那": "anh / chồng",
 }
 
 # Các câu thường bị model "làm sạch" quá mức (uncen)
@@ -228,6 +220,7 @@ class WhisperPreCheck:
             for m in standalone_name.finditer(text):
                 self.issues.append({
                     'line_id': idx,
+                    'line': idx,
                     'severity': 'warning',
                     'type': 'name_standalone',
                     'message': f"Tên riêng đứng riêng: {m.group(0).strip()!r} - "
@@ -237,6 +230,7 @@ class WhisperPreCheck:
             for m in wrong_honorific.finditer(text):
                 self.issues.append({
                     'line_id': idx,
+                    'line': idx,
                     'severity': 'warning',
                     'type': 'honorific_romaji',
                     'message': f"Honorific viết sai romaji: {m.group(0)!r} - "
@@ -246,6 +240,7 @@ class WhisperPreCheck:
             for m in colon_name.finditer(text):
                 self.issues.append({
                     'line_id': idx,
+                    'line': idx,
                     'severity': 'warning',
                     'type': 'name_colon',
                     'message': f"Tên có dấu phân cách: {m.group(0)!r} - "

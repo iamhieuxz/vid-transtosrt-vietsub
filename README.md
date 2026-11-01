@@ -56,7 +56,7 @@ Chọn hoặc kéo-thả file đầu vào, chọn ngôn ngữ Nguồn/Đích, ch
 </p>
 
 ### 2. Quản lý Từ điển & Tự học AI (Glossary & Self-Learning)
-Tra cứu nhanh hàng trăm thuật ngữ trong `glossary_uncen.yaml`, `glossary_common.yaml`, `glossary_learned.yaml`, thêm/sửa trực tiếp hoặc bấm **"Quét DB tự học"** để AI học từ toàn bộ lịch sử dịch:
+Tra cứu nhanh hàng trăm thuật ngữ trong `glossary_uncen.yaml`, `glossary_common.yaml`, `glossary_learned.yaml` và thư mục `glossaries/`, thêm/sửa trực tiếp, bấm **"Học từ DB"** để AI học từ lịch sử dịch hoặc **"Học SRT sửa tay"** để nạp trực tiếp phụ đề đã chỉnh sửa bằng Aegisub vào Translation Memory (`confidence=1.0`):
 <p align="center">
   <img src="docs/images/gui_glossary.png" alt="Glossary Page" width="95%"/>
 </p>
@@ -159,20 +159,25 @@ vid-transtosrt-vietsub/
 ├── glossary_uncen.yaml          # Từ điển chuyên biệt chế độ Uncen (+18) kèm luật cấm né tránh
 ├── glossary_common.yaml         # Từ điển giao tiếp, thán từ và danh xưng phổ biến
 ├── glossary_learned.yaml        # Từ điển do AI tự học xuyên suốt các dự án (auto-generated)
+├── glossaries/                  # Thư mục lưu trữ từ điển tự học & nhân vật theo từng bộ phim
+├── DANH_GIA_VA_LO_TRINH_NANG_CAP.md # Báo cáo đánh giá kiến trúc & lộ trình nâng cấp hoàn chỉnh
 ├── core/
 │   ├── transcriber.py           # Nhận diện giọng nói Faster-Whisper + khử khoảng lặng + lọc nhiễu
 │   ├── sub_merger.py            # Khâu từ bị cắt đôi & gộp phụ đề lặp bất thường
+│   ├── sub_splitter.py          # Tách phụ đề dài (> 6s) thông minh theo dấu câu & dòng
 │   ├── whisper_normalizer.py    # Chuẩn hóa thán từ/kana ngắn trước khi dịch
+│   ├── mecab_utils.py           # Thread-safe MeCab Singleton Tagger dùng chung toàn hệ thống
 │   ├── pipeline.py              # Orchestrator điều phối toàn bộ quy trình dịch & resume
 │   ├── translator.py            # Kết nối Ollama API + Circuit Breaker + JSON extraction
 │   ├── ja_context_analyzer.py   # Worker A: Phân tích bối cảnh & xưng hô toàn phim
-│   ├── ja_translator.py         # Dịch 3 vòng chuyên sâu cho tiếng Nhật (Literal -> Polish -> QA)
+│   ├── ja_translator.py         # Dịch 3 vòng chuyên sâu (Literal -> Polish -> QA + Dynamic Few-Shot TM)
 │   ├── ja_translator2.py        # Batch Refiner: Dịch vét dòng trống & trau chuốt theo lô
 │   ├── post_processor.py        # Hậu kiểm Regex tốc độ cao (Sino-VN, CJK leak, luật cấm Glossary)
-│   ├── character_registry.py    # Đồng nhất tên nhân vật toàn bộ phim
-│   ├── glossary_miner.py        # Tự học từ vựng bằng fugashi (MeCab) + PMI co-occurrence
+│   ├── character_registry.py    # Đồng nhất tên nhân vật toàn bộ phim (Hepburn Romaji)
+│   ├── glossary_miner.py        # Tự học từ vựng bằng fugashi (MeCab) + Incremental N-Gram Cache
+│   ├── human_feedback.py        # Học trực tiếp từ file SRT đã sửa tay (Human-in-the-Loop Feedback)
 │   ├── validator.py             # Kiểm định chất lượng bản dịch (chống lặp, lệch dòng, sót kana)
-│   ├── database.py              # SQLite WAL lưu trữ projects, windows, TM, learned_terms, error_logs
+│   ├── database.py              # SQLite WAL lưu trữ projects, windows, TM, ngram_cache, learned_terms
 │   └── exporter.py              # Xuất SRT chuẩn UTF-8 BOM (atomic write) + tạo Video Shortcut
 ├── docs/images/                 # Hình ảnh chụp giao diện & sơ đồ kiến trúc
 ├── run_tests.py                 # Bộ kiểm thử tích hợp (Unit + Regression + E2E Mock)

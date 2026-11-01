@@ -62,6 +62,19 @@ _SOURCE_CONDITIONED_FIXES = [
     (re.compile(r'バック'), re.compile(r'\bhậu môn\b', re.IGNORECASE), 'tư thế từ phía sau'),
     (re.compile(r'彼氏'), re.compile(r'\banh trai\b', re.IGNORECASE), 'bạn trai'),
     (re.compile(r'お水'), re.compile(r'\bnước tiểu\b', re.IGNORECASE), 'nước uống'),
+    (re.compile(r'葵'), re.compile(r'\b(hoa\s+)?cúc\b', re.IGNORECASE), 'Aoi'),
+    # ROE-459: 媚薬 (thuốc kích dục) bị Whisper ghi nhầm thành 美薬/美役 → model dịch "thuốc đẹp"/"vai diễn"
+    (re.compile(r'(媚薬|美薬|美役|びやく)'),
+     re.compile(r'\b(loại thuốc đẹp|thuốc đẹp|thuốc mỹ nhân|thuốc làm đẹp|thuốc sắc đẹp|vai diễn|nhân vật)\b', re.IGNORECASE),
+     'thuốc kích dục'),
+    # ROE-459: おばさん trong quan hệ họ hàng = "dì", KHÔNG dịch "bà già"/"bà lão"/"bà cô"
+    (re.compile(r'(おばさん|伯母さん|叔母さん|おばちゃん)'),
+     re.compile(r'\b(bà già|bà lão|bà cô|bà bác)\b', re.IGNORECASE),
+     'dì'),
+    # ROE-459: 友達 (bạn bè) bị dịch nhầm thành "bạn tình" khi câu không có セフレ
+    (re.compile(r'^(?!.*(セフレ|セックスフレンド|愛人)).*友達'), re.compile(r'\bbạn tình\b', re.IGNORECASE), 'bạn bè'),
+    # ROE-459: 茄子 (cà tím) bị dịch nhầm thành "bí ngô"
+    (re.compile(r'(茄子|なす|ナス)'), re.compile(r'\bbí ngô\b', re.IGNORECASE), 'cà tím'),
 ]
 
 
@@ -126,35 +139,99 @@ _PARTICLES = [
     ('して', ''),
 ]
 
-# Rule 3b: Chinese/Japanese CJK phrase leaks từ model Qwen/Hunyuan trong câu tiếng Việt
-_CJK_LEAK_FIXES = [
-    ('绝对不会', ' tuyệt đối không '),
-    ('絶対不会', ' tuyệt đối không '),
-    ('絶対に', ' tuyệt đối '),
-    ('绝对', ' tuyệt đối '),
-    ('原来是', ' thì ra là '),
-    ('原来', ' thì ra '),
-    ('其实', ' thật ra '),
-    ('因为', ' vì '),
-    ('所以', ' nên '),
-    ('但是', ' nhưng '),
-    ('不过', ' tuy nhiên '),
-    ('如果', ' nếu '),
-    ('虽然', ' mặc dù '),
-    ('已经', ' đã '),
-    ('一直', ' luôn '),
-    ('馬上', ' ngay lập tức '),
-    ('马上', ' ngay lập tức '),
-    ('真的', ' thật sự '),
-    ('非常', ' rất '),
-    ('完全', ' hoàn toàn '),
-    ('肯定', ' chắc chắn '),
-    ('到底', ' rốt cuộc '),
-    ('难道', ' chẳng lẽ '),
-    ('居然', ' lại có thể '),
-    ('竟然', ' lại có thể '),
-]
+# Rule 3b: Bảng từ điển CJK phrase leaks dùng chung cho cả post_processor và ja_qa_checker
+_RAW_CJK_LEAK_MAP = {
+    '绝对不会': 'tuyệt đối không',
+    '絶対不会': 'tuyệt đối không',
+    '絶対に': 'tuyệt đối',
+    '絶対': 'tuyệt đối',
+    '绝对': 'tuyệt đối',
+    '原来是': 'thì ra là',
+    '原来': 'thì ra',
+    '其实': 'thật ra',
+    '因为': 'vì',
+    '所以': 'nên',
+    '但是': 'nhưng',
+    '不过': 'tuy nhiên',
+    '如果': 'nếu',
+    '虽然': 'mặc dù',
+    '已经': 'đã',
+    '一直': 'luôn',
+    '馬上': 'ngay lập tức',
+    '马上': 'ngay lập tức',
+    '真的': 'thật sự',
+    '非常': 'rất',
+    '完全': 'hoàn toàn',
+    '肯定': 'chắc chắn',
+    '到底': 'rốt cuộc',
+    '难道': 'chẳng lẽ',
+    '居然': 'lại có thể',
+    '竟然': 'lại có thể',
+    '上班': 'làm việc',
+    '下班': 'tan làm',
+    '加班': 'tăng ca',
+    '表白': 'tỏ tình',
+    '听话': 'nghe lời',
+    '聽話': 'nghe lời',
+    '気持ちいい': 'sướng quá',
+    '気持ち良い': 'sướng quá',
+    '気持ち良': 'sướng',
+    '気持ち': 'cảm giác',
+    'チンチン': 'con cặc',
+    'ちんちん': 'con cặc',
+    '中出し': 'xuất tinh trong',
+    '仲出し': 'xuất tinh trong',
+    '葵': 'Aoi',
+    '吉田': 'Yoshida',
+    '石野': 'Ishino',
+    '加藤': 'Kato',
+    '市野': 'Ichino',
+    '海田': 'Kaita',
+    '先生': 'thầy',
+    '先輩': 'tiền bối',
+    '部長': 'trưởng phòng',
+    '社長': 'giám đốc',
+    '彼氏': 'bạn trai',
+    '彼女': 'bạn gái',
+    '旦那': 'chồng',
+    '主人': 'chồng',
+    '奥さん': 'vợ',
+    '夫婦': 'vợ chồng',
+    '本当': 'thật sự',
+    'ほんと': 'thật sự',
+    '大丈夫': 'không sao',
+    'ごめん': 'xin lỗi',
+    'ありがとう': 'cảm ơn',
+    'お願い': 'làm ơn',
+    'やめて': 'dừng lại',
+    'だめ': 'không được',
+    'ダメ': 'không được',
+    '無理': 'không thể',
+    '好き': 'thích',
+    '大好き': 'rất thích',
+    '愛してる': 'yêu em',
+    '可愛い': 'dễ thương',
+    '綺麗': 'đẹp',
+    '最高': 'tuyệt nhất',
+    '変態': 'biến thái',
+    '我慢': 'nhịn',
+    '恥ずかしい': 'xấu hổ',
+    'すごい': 'tuyệt vời',
+    'やばい': 'nguy quá',
+}
+# Sắp xếp từ dài xuống ngắn để tránh cụm ngắn cắt ngang cụm dài
+COMMON_CJK_LEAK_MAP = dict(sorted(_RAW_CJK_LEAK_MAP.items(), key=lambda kv: -len(kv[0])))
+_CJK_LEAK_FIXES = [(k, f' {v} ') for k, v in COMMON_CJK_LEAK_MAP.items()]
 _CJK_RE = re.compile(r'[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]+')
+_CYRILLIC_LEAK_FIXES = {
+    'псевдоним': 'bút danh',
+    'псевдонима': 'bút danh',
+    'привет': 'xin chào',
+    'спасибо': 'cảm ơn',
+    'извините': 'xin lỗi',
+    'хорошо': 'được rồi',
+}
+_CYRILLIC_RE = re.compile(r'[\u0400-\u04ff]+')
 _VI_CHARS_RE = re.compile(r'[a-zA-ZàáảãạăâêôơưđÀÁẢÃẠĂÂÊÔƠƯĐ]')
 
 
@@ -168,6 +245,7 @@ _ENGLISH_FIXES = {
     'sorry': 'xin lỗi',
     'goodbye': 'tạm biệt',
     'love you': 'yêu em',
+    'napping': '',
 }
 
 _ENGLISH_RE = re.compile(
@@ -351,25 +429,48 @@ class RuleBasedPostProcessor:
                     text = vi_re.sub(lambda m, r=rep: _preserve_case_replace(m.group(0), r), text)
             for src_term, vi_forbid_re, tgt_term in self._glossary_forbidden_rules:
                 if src_term in source_text:
-                    text = vi_forbid_re.sub(
-                        lambda m, r=tgt_term: _preserve_case_replace(m.group(0), r),
-                        text,
-                    )
+                    text = vi_forbid_re.sub(lambda m, r=tgt_term: _preserve_case_replace(m.group(0), r), text)
+
+        # 2c. Nguồn không có chữ Nhật (Whisper để sót "Cảm ơn") mà model tự thêm "anh/chị" → gỡ
+        if source_text and not _CJK_RE.search(source_text):
+            text = re.sub(r'\s+anh/chị\b', '', text, flags=re.IGNORECASE)
 
         # 3. Fix Romaji leak
         def _replace_romaji(m):
             rep = _ROMAJI_TO_VI.get(m.group(0).lower(), m.group(0))
             return _preserve_case_replace(m.group(0), rep)
         text = _ROMAJI_RE.sub(_replace_romaji, text)
+        text = re.sub(r'\bnee([.!?…]?)$', r'nhé\1', text, flags=re.IGNORECASE)
+
+        # 3c. Fix Cyrillic leak (từ model đa ngôn ngữ Qwen 8B)
+        if _CYRILLIC_RE.search(text):
+            for cyr_w, vi_w in _CYRILLIC_LEAK_FIXES.items():
+                text = re.sub(re.escape(cyr_w), vi_w, text, flags=re.IGNORECASE)
+            if _CYRILLIC_RE.search(text) and _VI_CHARS_RE.search(text):
+                text = _CYRILLIC_RE.sub(' ', text)
 
         # 4. Fix kana particles bị sót + CJK phrase leaks từ Qwen/Hunyuan
+        if self.character_names and _CJK_RE.search(text):
+            for entry in self.character_names:
+                canonical = (entry.get('canonical') or '').strip()
+                if not canonical:
+                    continue
+                for alias in sorted(entry.get('aliases') or [], key=len, reverse=True):
+                    if alias and alias != canonical and alias in text:
+                        text = text.replace(alias, f' {canonical} ')
         for wrong, correct in _PARTICLES:
             text = text.replace(wrong, correct)
         for cjk_phrase, vi_rep in _CJK_LEAK_FIXES:
             if cjk_phrase in text:
                 text = text.replace(cjk_phrase, vi_rep)
         if _CJK_RE.search(text) and _VI_CHARS_RE.search(text):
-            text = _CJK_RE.sub(' ', text)
+            try:
+                from .ja_qa_checker import JaQAChecker
+                text = JaQAChecker(character_names=self.character_names).clean_cjk_leak(
+                    source_text or '', text
+                )
+            except Exception:
+                text = _CJK_RE.sub(' ', text)
 
         # 5. Fix English leak
         def _replace_english(m):

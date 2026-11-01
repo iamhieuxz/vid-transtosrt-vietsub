@@ -153,15 +153,38 @@ all_text = ''.join(txt for _, _, txt in cues)
 check(all_text == ''.join(x.word for x in seg_long.words),
       'khong mat chu khi tach cue')
 
-# Segment khong co words -> fallback 1 cue
+# Segment khong co words -> chia theo dau cau, cap 12s, KHONG con cue 100s
 seg_nw = types.SimpleNamespace(start=0.0, end=100.0, text='test', words=None)
 cues = t._split_by_words(seg_nw, 0.0)
-check(len(cues) == 1 and cues[0][1] == '00:01:40,000',
-      'khong co word timestamps -> fallback 1 cue goc')
+check(len(cues) >= 1 and all(
+    _secs(e) - _secs(s) <= 12.0 + 0.5 for s, e, _ in cues
+), 'khong co word timestamps -> van cap 12s/cue (khong con cue 100s)')
+check(''.join(txt for _, _, txt in cues) == 'test', 'khong mat text khi chia cue')
 
 # Offset (transcribe_interval)
 cues = t._split_by_words(seg_nw, 60.0)
 check(cues[0][0] == '00:01:00,000', 'offset duoc cong don')
+
+print('\n=== 3. cue_repair + post_processor (ROE-459 / JUR-412) ===')
+from core.cue_repair import repair_timestamps
+from core.post_processor import RuleBasedPostProcessor
+
+# Cue ket bang tro tu (manh vo cua cau sau) -> dich cua so ap sat cue ke tiep
+rows = [{'start': 0.0, 'end': 3000.0, 'text': '媚薬は'},
+        {'start': 3000.0, 'end': 3002.0, 'text': '確実に'}]
+repair_timestamps(rows)
+check(rows[0]['end'] == 3000.0 and rows[0]['start'] > 2990.0, 'cue ket bang tro tu duoc dich sat cue ke')
+
+# Cue dai, cau tron ven -> giu start, rut end
+rows = [{'start': 10.0, 'end': 500.0, 'text': 'すまなかった'},
+        {'start': 500.0, 'end': 503.0, 'text': 'はい'}]
+repair_timestamps(rows)
+check(rows[0]['start'] == 10.0 and rows[0]['end'] - rows[0]['start'] <= 12.0, 'cue dai cau tron ven -> rut end <= 12s')
+check(all(a['start'] <= b['start'] for a, b in zip(rows, rows[1:])), 'thu tu cue khong bi dao')
+
+pp = RuleBasedPostProcessor()
+check(pp.process_line('Cảm ơn anh/chị', source_text='Cảm ơn') == 'Cảm ơn', 'go "anh/chị" tu sinh khi nguon khong co chu Nhat')
+check('anh/chị' in pp.process_line('Cảm ơn anh/chị', source_text='ありがとうございます'), 'giu "anh/chị" khi nguon la tieng Nhat')
 
 print('\n=== KET QUA ===')
 if FAIL:

@@ -4,7 +4,6 @@ import io
 import os
 import sys
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.sub_merger import merge_srt_items
@@ -57,9 +56,34 @@ def test_single_not_affected():
     assert len(out) == 1, out
 
 
+def test_heal_particle_split_real_cues():
+    """Cặp cue thật bị cắt giữa cụm (JUR-708 #81, JUR-630 #24/#105/#18) được khâu lại."""
+    cases = [
+        ('それが、他', 'に気になる人が出来てしまって。', 'それが、', '他に気になる人が出来てしまって。'),
+        ('結構のびりしてますからそれ', 'を聞いて安心しました', '結構のびりしてますから', 'それを聞いて安心しました'),
+        ('誓ったんです 私', 'の話をまともに聞こう', '誓ったんです', '私の話をまともに聞こう'),
+        ('こちらです あり', 'がとうございます', 'こちらです', 'ありがとうございます'),
+    ]
+    for a, b, want_a, want_b in cases:
+        out = merge_srt_items([item(1, '00:00:00,000', '00:00:02,000', a),
+                               item(2, '00:00:02,000', '00:00:04,000', b)])
+        assert [o['text'] for o in out] == [want_a, want_b], (a, b, out)
+
+
+def test_heal_does_not_move_content_word_into_next_cue():
+    """B mở đầu bằng từ nội dung (形容詞/名詞) → KHÔNG chuyển 'もし'/'ください' (hồi quy khi token fugashi bị đọc muộn)."""
+    for a, b in [('いいですかもし', '細かいところでわからない'), ('聞かないでください', 'さっきから なんだよ')]:
+        out = merge_srt_items([item(1, '00:00:00,000', '00:00:02,000', a),
+                               item(2, '00:00:02,000', '00:00:04,000', b)])
+        assert [o['text'] for o in out] == [a, b], out
+
+
 if __name__ == '__main__':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     tests = [test_long_dup_merged, test_dup_far_apart_kept,
-             test_dup_within_2s_merged, test_single_not_affected]
+             test_dup_within_2s_merged, test_single_not_affected,
+             test_heal_particle_split_real_cues,
+             test_heal_does_not_move_content_word_into_next_cue]
     failed = 0
     for fn in tests:
         try:

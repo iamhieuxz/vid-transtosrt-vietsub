@@ -9,7 +9,7 @@ import io
 import os
 import sys
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.ja_translator import _clean_markdown
@@ -40,7 +40,7 @@ CASES = [
 ]
 
 
-def test_all():
+def _run_cases():
     failed = []
     for raw, expected in CASES:
         got = _clean_markdown(raw)
@@ -49,8 +49,13 @@ def test_all():
     return failed
 
 
+def test_all():
+    failed = _run_cases()
+    assert not failed, f"Failed cases: {failed}"
+
+
 if __name__ == '__main__':
-    fails = test_all()
+    fails = _run_cases()
     for raw, exp, got in fails:
         print('[FAIL] %r\n   expected %r\n   got      %r' % (raw, exp, got))
     print('\n%d/%d passed' % (len(CASES) - len(fails), len(CASES)))

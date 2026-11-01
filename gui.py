@@ -15,6 +15,7 @@ Run: python gui.py
 
 import os
 import sys
+import json
 import queue
 import re
 import html
@@ -498,8 +499,8 @@ TARGET_LANGUAGES = {
 }
 
 TRANSLATION_MODES = {
-    "default": "Mặc định (hunyuan-mt-abliterated)",
-    "uncen":   "Uncen (qwen3-abliterated) [+18]",
+    "default": "Mặc định",
+    "uncen":   "Uncen [+18]",
 }
 
 ICON = {
@@ -557,6 +558,34 @@ def resolved_model_config(config: dict) -> dict:
     """
     from main import get_active_model_config
     return get_active_model_config(config)
+
+
+def active_model_key(config: dict) -> str:
+    """Key trong config['models'] mà main.py get_active_model_config() sẽ đọc.
+
+    Ánh xạ y hệt main.py:
+      translation.backend = key co ton tai trong models -> key do (uu tien cao nhat)
+      mode 'uncen'                -> 'uncen'
+      mode khác + source JA/KO/ZH/EN -> key ngôn ngữ ('ja'...) nếu có
+      còn lại                     -> 'default'
+    """
+    backend = str(config.get("translation", {}).get("backend", "") or "").strip().lower()
+    if backend and config.get("models", {}).get(backend):
+        return backend
+    mode = str(config.get("translation", {}).get("mode", "uncen") or "uncen").strip().lower()
+    if mode == "uncen":
+        return "uncen"
+    src = (config.get("project", {}).get("source_lang", "") or "").strip().lower()
+    lang_to_key = {
+        "japanese": "ja", "tiếng nhật": "ja", "tieng nhat": "ja", "ja": "ja",
+        "chinese": "zh", "tiếng trung": "zh", "tieng trung": "zh", "zh": "zh",
+        "korean": "ko", "tiếng hàn": "ko", "tieng han": "ko", "ko": "ko",
+        "english": "en", "tiếng anh": "en", "tieng anh": "en", "en": "en",
+    }
+    lang_key = lang_to_key.get(src)
+    if lang_key and config.get("models", {}).get(lang_key):
+        return lang_key
+    return "default"
 
 
 def glossary_file_for(project_name: str) -> str:
@@ -699,7 +728,7 @@ def make_vector_icon(kind: str, size: int = 16, color: str = "#F8FAFC") -> QIcon
         p.drawRoundedRect(QRectF(m, m, w, h), 2.5 * scale, 2.5 * scale)
         p.drawLine(QPointF(m + w * 0.26, m + h * 0.52), QPointF(m + w * 0.44, m + h * 0.70))
         p.drawLine(QPointF(m + w * 0.44, m + h * 0.70), QPointF(m + w * 0.76, m + h * 0.32))
-    elif kind == "tool" or kind == "sparkle":
+    elif kind in ("tool", "sparkle", "wand"):
         cx, cy = px / 2, px / 2
         r_out = w * 0.48
         r_in = w * 0.16
@@ -758,6 +787,7 @@ class LogBridge(QObject):
     finished = Signal(int)           # exit code
     progress = Signal(int, int)      # cur, total
     ollama_status = Signal(bool, str)
+    models_listed = Signal(list)     # available Ollama model names
 
 
 _ANSI_ESCAPE_RE = re.compile(r"\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))")
@@ -967,6 +997,7 @@ class ToggleSwitch(QCheckBox):
 
     def setChecked(self, checked: bool):
         super().setChecked(checked)
+        self._anim.stop()
         self._pos = 1.0 if checked else 0.0
         self.update()
 
@@ -1487,6 +1518,18 @@ class SettingsPage(QWidget):
         llm_title.setObjectName("sectionTitle")
         llm_card.addWidget(llm_title)
 
+        # Model selector — áp dụng cho mode đang chọn (default/uncen/ja...)
+        # Danh sách được refresh từ Ollama /api/tags khi app khởi động.
+        self.llm_model_combo = StudioComboBox()
+        self.llm_model_combo.setObjectName("llm_model_combo")
+        self.llm_model_combo.setMinimumWidth(320)
+        self.llm_model_combo.addItems([
+            "goekdenizguelmez/JOSIEFIED-Qwen3:8b",
+            "huihui_ai/qwen3-abliterated:8b-v2",
+            "huihui_ai/hunyuan-mt-abliterated:7b-chimera",
+        ])
+        llm_card.addWidget(FieldRow("Model Ollama (áp dụng cho mode đang chọn)", self.llm_model_combo))
+
         llm_grid = QGridLayout()
         llm_grid.setHorizontalSpacing(16)
         llm_grid.setVerticalSpacing(12)
@@ -1566,24 +1609,29 @@ class GlossaryPage(QWidget):
         toolbar.addWidget(self.count_badge, 0, Qt.AlignVCenter)
         toolbar.addStretch(1)
 
-        self.mine_btn = AnimatedButton("Học từ DB ngay", variant="accent", icon_kind="sparkle")
-        self.mine_btn.setMinimumWidth(142)
+        self.mine_btn = AnimatedButton("Học từ DB", variant="accent", icon_kind="sparkle")
+        self.mine_btn.setMinimumWidth(112)
         self.mine_btn.setToolTip("Quét toàn bộ các dự án đã dịch trong Database để trích xuất từ vựng mới vào glossary_learned.yaml")
         toolbar.addWidget(self.mine_btn)
 
+        self.human_srt_btn = AnimatedButton("Học SRT sửa tay", variant="secondary", icon_kind="wand")
+        self.human_srt_btn.setMinimumWidth(134)
+        self.human_srt_btn.setToolTip("Chọn file .srt tiếng Việt đã chỉnh sửa bằng Aegisub để nạp vào Translation Memory (confidence 1.0) và rút trích từ vựng")
+        toolbar.addWidget(self.human_srt_btn)
+
         self.add_btn = AnimatedButton("Thêm từ", variant="secondary", icon_kind="plus")
-        self.add_btn.setMinimumWidth(104)
+        self.add_btn.setMinimumWidth(96)
         toolbar.addWidget(self.add_btn)
 
         self.import_btn = AnimatedButton("Import CSV", variant="ghost", icon_kind="open")
-        self.import_btn.setMinimumWidth(112)
+        self.import_btn.setMinimumWidth(104)
         toolbar.addWidget(self.import_btn)
         self.export_btn = AnimatedButton("Export CSV", variant="ghost", icon_kind="save")
-        self.export_btn.setMinimumWidth(112)
+        self.export_btn.setMinimumWidth(104)
         toolbar.addWidget(self.export_btn)
 
         self.save_btn = AnimatedButton("Lưu vào Phim", variant="primary", icon_kind="save")
-        self.save_btn.setMinimumWidth(128)
+        self.save_btn.setMinimumWidth(120)
         toolbar.addWidget(self.save_btn)
         v.addLayout(toolbar)
 
@@ -1621,25 +1669,40 @@ class GlossaryPage(QWidget):
         self.scroll.setWidget(self.scroll_inner)
         v.addWidget(self.scroll, 1)
 
+        self.load_more_btn = AnimatedButton("Hiển thị thêm…", variant="ghost", icon_kind="plus")
+        self.load_more_btn.setVisible(False)
+        self.load_more_btn.clicked.connect(self._render_next_batch)
+        v.addWidget(self.load_more_btn)
+
+        self.RENDER_BATCH_SIZE = 120
         self.rows = []  # list of dicts: {frame, src, tgt, ctx}
+        self._unrendered_entries = []  # lazy queue cho danh sách lớn
         self.add_btn.clicked.connect(lambda: self._add_row(scroll_to_bottom=True))
         self.save_btn.clicked.connect(self._save)
         self.import_btn.clicked.connect(self._import_csv)
         self.export_btn.clicked.connect(self._export_csv)
         self.mine_btn.clicked.connect(self._mine_learned_terms)
+        self.human_srt_btn.clicked.connect(self._learn_from_human_srt)
 
     def _update_count_badge(self):
         visible = sum(1 for r in self.rows if not r["frame"].isHidden())
-        total = len(self.rows)
+        total = len(self.rows) + len(getattr(self, "_unrendered_entries", []))
         if self.search_edit.text().strip():
             self.count_badge.setText(f"{visible} / {total} mục")
         else:
             self.count_badge.setText(f"{total} mục")
+        if hasattr(self, "load_more_btn"):
+            rem = len(getattr(self, "_unrendered_entries", []))
+            self.load_more_btn.setVisible(rem > 0)
+            if rem > 0:
+                self.load_more_btn.setText(f"Hiển thị thêm ({rem} mục còn lại)…")
         if hasattr(self, "app") and hasattr(self.app, "page_workspace"):
             self.app.page_workspace.glossary_kpi.set_value(f"{total} thuật ngữ", THEME["primary"])
 
     def _filter_rows(self, query: str):
         q = (query or "").strip().lower()
+        if q and getattr(self, "_unrendered_entries", None):
+            self._render_next_batch(limit=len(self._unrendered_entries))
         for r in self.rows:
             if not q:
                 r["frame"].setVisible(True)
@@ -1665,6 +1728,40 @@ class GlossaryPage(QWidget):
             self.app.log_message("OK", msg)
         except Exception as e:
             QMessageBox.critical(self, "Lỗi học từ vựng", str(e))
+
+    def _learn_from_human_srt(self):
+        """Nạp file SRT tiếng Việt đã sửa tay (Aegisub) vào TM & glossary_pending.yaml."""
+        proj_name = (self.app.config.get("project", {}) or {}).get("name", "").strip()
+        if not proj_name:
+            QMessageBox.warning(
+                self, "Chưa chọn dự án",
+                "Vui lòng chọn dự án / file input trước khi nạp file SRT đã sửa tay."
+            )
+            return
+        srt_path, _ = QFileDialog.getOpenFileName(
+            self, f"Chọn file SRT đã sửa tay cho {proj_name}", "", "Subtitle (*.srt)"
+        )
+        if not srt_path:
+            return
+        try:
+            from core.database import Database
+            from core.human_feedback import learn_from_human_srt
+            db = Database()
+            stats = learn_from_human_srt(db, self.app.config, proj_name, srt_path)
+            for cand in stats.get("candidates", []):
+                self._add_row(
+                    cand.get("source_term", ""),
+                    cand.get("target_term", ""),
+                    f"human-fix (conf={cand.get('confidence', 1.0)})",
+                )
+            msg = (
+                f"Đã học {stats['fixed_lines']} câu sửa tay vào TM & "
+                f"{stats['new_terms']} từ mới → {stats['pending_path']}"
+            )
+            self.app.set_status(msg, "success")
+            self.app.log_message("OK", msg)
+        except Exception as e:
+            QMessageBox.critical(self, "Lỗi học từ SRT sửa tay", str(e))
 
     def _import_csv(self):
         """Import glossary từ file CSV (header: source,target,context)."""
@@ -1705,12 +1802,18 @@ class GlossaryPage(QWidget):
                     c = r["ctx"].text().strip()
                     if s or t:
                         writer.writerow({'source': s, 'target': t, 'context': c})
+                for entry in getattr(self, "_unrendered_entries", []):
+                    s = (entry.get("source_term") or entry.get("source") or "").strip()
+                    t = (entry.get("target_term") or entry.get("target") or "").strip()
+                    c = (entry.get("context_hint") or entry.get("context") or "").strip()
+                    if s or t:
+                        writer.writerow({'source': s, 'target': t, 'context': c})
             if hasattr(self, 'app') and self.app:
                 self.app.set_status(f"Đã export glossary → {path}", "success")
         except Exception as e:
             QMessageBox.critical(self, "Lỗi export", str(e))
 
-    def _add_row(self, src="", tgt="", ctx="", scroll_to_bottom=False):
+    def _add_row(self, src="", tgt="", ctx="", scroll_to_bottom=False, _batch_mode=False):
         idx = self.rows_layout.count() - 1
         row = QFrame()
         row.setObjectName("glossRow")
@@ -1720,12 +1823,15 @@ class GlossaryPage(QWidget):
 
         src_edit = QLineEdit(src)
         src_edit.setPlaceholderText("おちんちん")
+        src_edit.setCursorPosition(0)
         h.addWidget(src_edit, 3)
         tgt_edit = QLineEdit(tgt)
         tgt_edit.setPlaceholderText("cặc / dương vật")
+        tgt_edit.setCursorPosition(0)
         h.addWidget(tgt_edit, 3)
         ctx_edit = QLineEdit(ctx)
         ctx_edit.setPlaceholderText("Ghi chú hoặc: KHÔNG dịch \"...\"")
+        ctx_edit.setCursorPosition(0)
         h.addWidget(ctx_edit, 4)
         del_btn = IconButton(ICON["trash"], "Xoá dòng", variant="danger")
         h.addWidget(del_btn, 0)
@@ -1734,7 +1840,8 @@ class GlossaryPage(QWidget):
         data = {"frame": row, "src": src_edit, "tgt": tgt_edit, "ctx": ctx_edit}
         del_btn.clicked.connect(lambda: self._remove_row(data))
         self.rows.append(data)
-        self._update_count_badge()
+        if not _batch_mode:
+            self._update_count_badge()
 
         if scroll_to_bottom:
             QTimer.singleShot(30, lambda: self.scroll.verticalScrollBar().setValue(
@@ -1742,25 +1849,54 @@ class GlossaryPage(QWidget):
             ))
 
     def _remove_row(self, data):
+        self.rows_layout.removeWidget(data["frame"])
+        data["frame"].setParent(None)
         data["frame"].deleteLater()
         if data in self.rows:
             self.rows.remove(data)
         self._update_count_badge()
 
-    def load(self, glossary: list):
+    def _render_next_batch(self, limit: int = 0):
+        """Render thêm một lô dòng từ _unrendered_entries để UI không bị đơ với từ điển lớn."""
+        if not getattr(self, "_unrendered_entries", None):
+            return
+        batch_size = limit if limit and limit > 0 else getattr(self, "RENDER_BATCH_SIZE", 120)
+        chunk = self._unrendered_entries[:batch_size]
+        self._unrendered_entries = self._unrendered_entries[batch_size:]
         self.scroll_inner.setUpdatesEnabled(False)
         try:
-            for r in self.rows:
-                r["frame"].deleteLater()
-            self.rows.clear()
-            if not glossary:
-                self._add_row()
-                return
-            for entry in glossary:
+            for entry in chunk:
                 self._add_row(
                     entry.get("source_term") or entry.get("source", ""),
                     entry.get("target_term") or entry.get("target", ""),
                     entry.get("context_hint") or entry.get("context", ""),
+                    _batch_mode=True,
+                )
+        finally:
+            self.scroll_inner.setUpdatesEnabled(True)
+            self._update_count_badge()
+
+    def load(self, glossary: list):
+        self.scroll_inner.setUpdatesEnabled(False)
+        try:
+            for r in self.rows:
+                self.rows_layout.removeWidget(r["frame"])
+                r["frame"].setParent(None)
+                r["frame"].deleteLater()
+            self.rows.clear()
+            self._unrendered_entries = []
+            if not glossary:
+                self._add_row(_batch_mode=True)
+                return
+            batch_size = getattr(self, "RENDER_BATCH_SIZE", 120)
+            initial = glossary[:batch_size]
+            self._unrendered_entries = list(glossary[batch_size:])
+            for entry in initial:
+                self._add_row(
+                    entry.get("source_term") or entry.get("source", ""),
+                    entry.get("target_term") or entry.get("target", ""),
+                    entry.get("context_hint") or entry.get("context", ""),
+                    _batch_mode=True,
                 )
         finally:
             self.scroll_inner.setUpdatesEnabled(True)
@@ -1778,6 +1914,15 @@ class GlossaryPage(QWidget):
                 if c:
                     entry["context_hint"] = c
                 terms.append(entry)
+        for entry in getattr(self, "_unrendered_entries", []):
+            s = (entry.get("source_term") or entry.get("source") or "").strip()
+            t = (entry.get("target_term") or entry.get("target") or "").strip()
+            c = (entry.get("context_hint") or entry.get("context") or "").strip()
+            if s and t:
+                item = {"source_term": s, "target_term": t}
+                if c:
+                    item["context_hint"] = c
+                terms.append(item)
         try:
             path = save_glossary_terms(project, terms)
         except Exception as e:
@@ -1873,19 +2018,25 @@ class App(QMainWindow):
         self.log_bridge.finished.connect(self._on_pipeline_finished)
         self.log_bridge.progress.connect(self._update_progress)
         self.log_bridge.ollama_status.connect(self._on_ollama_status)
+        self.log_bridge.models_listed.connect(self._on_models_listed)
 
         self.setStyleSheet(QSS)
         self._build_ui()
         self._refresh_from_config()
-        self._poll_log_queue()
         self._check_ollama_async()
 
     def _kill_running_process(self):
-        """Terminate main.py subprocess + đợi tối đa 5s. An toàn khi process đã chết."""
+        """Terminate main.py subprocess + toàn bộ cây tiến trình con (ffmpeg, llama-server)."""
         proc = getattr(self, 'process', None)
         if proc is None or proc.poll() is not None:
             return
         try:
+            pid = getattr(proc, 'pid', None)
+            if sys.platform == "win32" and pid:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(pid)],
+                    capture_output=True, timeout=5,
+                )
             proc.terminate()
             try:
                 proc.wait(timeout=5)
@@ -2088,29 +2239,72 @@ class App(QMainWindow):
         if key in self.nav_buttons:
             self.nav_buttons[key].setChecked(True)
 
-    # ---- Ollama Health Check -------------------------------------------
+    # ---- Backend Health Check (Ollama hoac llama-server) ----------------
     def _check_ollama_async(self):
         def _worker():
             active = resolved_model_config(self.config)
             model_name = active.get("name", "LLM")
             short_model = model_name.split("/")[-1]
             url = active.get("ollama_url", "http://localhost:11434/api/generate")
-            base_url = url.split("/api/")[0] + "/api/tags"
+            # llama-server (URL co /v1) KHONG co /api/tags; ghep noi dung kiem
+            # /api/tags vao do se ra ".../chat/completions/api/tags" -> badge luc
+            # nao cung "Offline" du model dang chay binh thuong.
+            is_openai = "/v1" in url
+            root = url.split("/v1")[0].rstrip("/") if is_openai else url.split("/api/")[0].rstrip("/")
+            probe = f"{root}/health" if is_openai else f"{root}/api/tags"
+            engine = "llama-server" if is_openai else "Ollama"
             try:
-                req = urllib.request.Request(base_url, method="GET")
+                req = urllib.request.Request(probe, method="GET")
                 with urllib.request.urlopen(req, timeout=2.5) as resp:
                     if resp.status == 200:
-                        self.log_bridge.ollama_status.emit(True, f"Online · {short_model}")
+                        try:
+                            data = json.loads(resp.read().decode("utf-8"))
+                            if is_openai:
+                                # /health chi tra ve status; model lay tu /v1/models.
+                                names = [m.get("id", "") for m in
+                                         json.loads(urllib.request.urlopen(
+                                             f"{root}/v1/models", timeout=2.5).read().decode("utf-8")
+                                         ).get("data", [])]
+                            else:
+                                names = [
+                                    m.get("name", "") for m in data.get("models", [])
+                                    if m.get("name")
+                                ]
+                            names = [n for n in names if n]
+                            if names:
+                                self.log_bridge.models_listed.emit(names)
+                        except Exception:
+                            pass
+                        self.log_bridge.ollama_status.emit(True, f"{engine} · {short_model}")
                         return
             except Exception:
                 pass
-            self.log_bridge.ollama_status.emit(False, f"Offline · {short_model}")
+            if is_openai:
+                self.log_bridge.ollama_status.emit(False, f"{engine} · chua bat (pipeline tu bat)")
+            else:
+                self.log_bridge.ollama_status.emit(False, f"Offline · {short_model}")
 
         threading.Thread(target=_worker, daemon=True).start()
 
     def _on_ollama_status(self, online: bool, label: str):
         color = THEME["success"] if online else THEME["error"]
         self.page_workspace.ollama_kpi.set_value(label, color)
+
+    def _on_models_listed(self, names: list):
+        """Ollama trả về danh sách model — nạp vào dropdown, giữ lựa chọn hiện tại."""
+        combo = self.page_settings.llm_model_combo
+        if not names:
+            return
+        current = combo.currentText()
+        merged = list(dict.fromkeys(names))
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems(merged)
+        if current:
+            idx = combo.findText(current)
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+        combo.blockSignals(False)
 
     # ---- Config --------------------------------------------------------
     def _refresh_from_config(self):
@@ -2159,6 +2353,9 @@ class App(QMainWindow):
         self.page_settings.temperature_edit.setText(str(active["temperature"]))
         self.page_settings.timeout_edit.setText(str(active["timeout"]))
         self.page_settings.ollama_url_edit.setText(active["ollama_url"])
+
+        # Model đang active cho mode hiện tại
+        self.page_settings.llm_model_combo.setCurrentText(active.get("name", ""))
 
         self.page_settings.max_retries_edit.setText(str(pipe.get("max_retries", 5)))
         self.page_settings.checkpoint_edit.setText(str(pipe.get("checkpoint_interval", 20)))
@@ -2224,12 +2421,15 @@ class App(QMainWindow):
         pipe["learn_glossary"] = self.page_settings.learn_glossary_cb.isChecked()
         self.config["translation"]["literal_mode"] = self.page_settings.literal_cb.isChecked()
 
-        # LLM settings (save to models.{active_mode})
-        # Fallback lấy từ main.py resolve (đúng default theo từng mode) thay vì
-        # viết số ở đây — tránh lệch khi main.py đổi default.
-        mode = self.config.get("translation", {}).get("mode", "uncen")
-        llm_cfg = self.config.setdefault("models", {}).setdefault(mode, {})
+        # LLM settings (save to models.{active_key}) — key phải khớp nhánh mà
+        # main.py get_active_model_config() đọc (uncen → models.uncen;
+        # default + JA → models.ja), không phụ thuộc translation.mode.
+        active_key = active_model_key(self.config)
+        llm_cfg = self.config.setdefault("models", {}).setdefault(active_key, {})
         dflt = resolved_model_config(self.config)
+        model_name = self.page_settings.llm_model_combo.currentText().strip()
+        if model_name:
+            llm_cfg["name"] = model_name
         try:
             llm_cfg["num_predict"] = int(self.page_settings.num_predict_edit.text() or dflt["num_predict"])
         except ValueError:
@@ -2456,9 +2656,6 @@ class App(QMainWindow):
         else:
             self.page_workspace.progress_label.setText(f"✗ Dừng với mã lỗi ({rc})")
             self.set_status(f"Lỗi (exit {rc})", "error")
-
-    def _poll_log_queue(self):
-        QTimer.singleShot(500, self._poll_log_queue)
 
     # ---- Status --------------------------------------------------------
     def set_status(self, text: str, kind: str = "info"):

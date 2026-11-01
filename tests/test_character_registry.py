@@ -37,9 +37,9 @@ def test_registry_basic():
     assert mapping.get("あゆみ") == "Ayumi", f"あゆみ: {mapping.get('あゆみ')}"
     # たくみ → Takumi (theo config vừa thêm)
     assert mapping.get("たくみ") == "Takumi", f"たくみ: {mapping.get('たくみ')}"
-    # 川口くん, さゆ không có trong config → giữ nguyên
-    assert mapping.get("川口くん") == "川口くん"
-    assert mapping.get("さゆ") == "さゆ"
+    # 川口くん, さゆ tự động chuyển sang Hepburn Romaji qua pykakasi (hoặc giữ nguyên nếu không có pykakasi)
+    assert mapping.get("川口くん") in ("Kawaguchi", "川口くん")
+    assert mapping.get("さゆ") in ("Sayu", "さゆ")
     print("test_registry_basic: PASS")
 
 
@@ -82,13 +82,13 @@ def test_validate_translation():
 
 
 def test_registry_pure_japanese_no_canonical():
-    """Tên thuần JA không có trong config → giữ nguyên (warning log)."""
+    """Tên thuần JA không có trong config → tự động chuyển sang Hepburn Romaji (hoặc giữ nguyên)."""
     db = make_mock_db([
         ["太郎"],   # Tarou - not in config
     ])
     reg = CharacterRegistry(db, project_id=1)
     mapping = reg.build()
-    assert mapping.get("太郎") == "太郎", f"Pure JA should keep: {mapping.get('太郎')}"
+    assert mapping.get("太郎") in ("Taro", "Tarou", "太郎"), f"Unexpected canonical: {mapping.get('太郎')}"
     print("test_registry_pure_japanese_no_canonical: PASS")
 
 

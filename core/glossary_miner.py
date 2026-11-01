@@ -17,24 +17,7 @@ import re
 from collections import Counter, defaultdict
 from typing import Dict, List, Optional, Set, Tuple
 
-_TAGGER = None
-_TAGGER_FAILED = False
-
-
-def _get_tagger():
-    """Lazy-init fugashi Tagger (MeCab + unidic-lite)."""
-    global _TAGGER, _TAGGER_FAILED
-    if _TAGGER is not None:
-        return _TAGGER
-    if _TAGGER_FAILED:
-        return None
-    try:
-        import fugashi
-        _TAGGER = fugashi.Tagger()
-        return _TAGGER
-    except Exception:
-        _TAGGER_FAILED = True
-        return None
+from .mecab_utils import get_tagger as _get_tagger
 
 
 # Từ khoá JA đặc trưng tình dục — cụm JA chứa 1 trong các từ này mới
@@ -117,21 +100,53 @@ class GlossaryMiner:
         return self._mine_from_pairs(pairs, skip_existing=skip_existing)
 
     def mine_all_projects(self, skip_existing: bool = True) -> List[dict]:
-        """Học từ vựng xuyên suốt TẤT CẢ các project đã dịch trong DB."""
+        """Học từ vựng xuyên suốt TẤT CẢ các project đã dịch trong DB.
+        Sử dụng project_ngram_cache để chỉ chạy MeCab (fugashi) trên các project mới/thay đổi.
+        """
         if not hasattr(self.db, 'get_all_projects'):
             return []
         projects = self.db.get_all_projects()
-        all_pairs: List[Tuple[str, str, int]] = []
+        tokenized_records: List[Tuple[Set[str], Set[str], int]] = []
+        has_cache_api = (
+            hasattr(self.db, 'get_project_ngram_cache')
+            and hasattr(self.db, 'save_project_ngram_cache')
+        )
         for p in projects:
             pid = p['id']
-            for it in self.db.get_all_items(pid):
-                if it.get('translated_text'):
-                    all_pairs.append((
-                        it.get('original_text') or '',
-                        it.get('translated_text') or '',
-                        pid,
-                    ))
-        cands = self._mine_from_pairs(all_pairs, skip_existing=skip_existing)
+            translated_items = [
+                (it.get('original_text') or '', it.get('translated_text') or '')
+                for it in self.db.get_all_items(pid)
+                if it.get('translated_text')
+            ]
+            if not translated_items:
+                continue
+            cached = None
+            if has_cache_api:
+                try:
+                    cand = self.db.get_project_ngram_cache(pid, len(translated_items))
+                    if isinstance(cand, list):
+                        cached = cand
+                except Exception:
+                    cached = None
+            if cached is not None:
+                for ja_list, vi_list in cached:
+                    if ja_list and vi_list:
+                        tokenized_records.append((set(ja_list), set(vi_list), pid))
+            else:
+                proj_ngrams = []
+                for ja_text, vi_text in translated_items:
+                    ja_ngrams = self._ja_ngrams(ja_text)
+                    vi_ngrams = self._vi_ngrams(vi_text)
+                    if ja_ngrams and vi_ngrams:
+                        tokenized_records.append((ja_ngrams, vi_ngrams, pid))
+                        proj_ngrams.append([sorted(ja_ngrams), sorted(vi_ngrams)])
+                if has_cache_api:
+                    try:
+                        self.db.save_project_ngram_cache(pid, len(translated_items), proj_ngrams)
+                    except Exception:
+                        pass
+
+        cands = self._mine_from_tokenized(tokenized_records, skip_existing=skip_existing)
         # Lưu các candidate chất lượng cao (xuất hiện ở >= 2 phim hoặc freq >= 5, conf >= 0.75) vào DB
         if hasattr(self.db, 'upsert_learned_term'):
             for c in cands:
@@ -153,17 +168,24 @@ class GlossaryMiner:
     def _mine_from_pairs(self, pairs: List[Tuple[str, str, int]], skip_existing: bool = True) -> List[dict]:
         if not pairs:
             return []
+        tokenized_records: List[Tuple[Set[str], Set[str], int]] = []
+        for ja_text, vi_text, pid in pairs:
+            ja_ngrams = self._ja_ngrams(ja_text)
+            vi_ngrams = self._vi_ngrams(vi_text)
+            if ja_ngrams and vi_ngrams:
+                tokenized_records.append((ja_ngrams, vi_ngrams, pid))
+        return self._mine_from_tokenized(tokenized_records, skip_existing=skip_existing)
+
+    def _mine_from_tokenized(self, tokenized_records: List[Tuple[Set[str], Set[str], int]], skip_existing: bool = True) -> List[dict]:
+        if not tokenized_records:
+            return []
 
         ja_count: Counter = Counter()
         vi_count: Counter = Counter()
         pair_count: Counter = Counter()
         pair_projects: Dict[Tuple[str, str], Set[int]] = defaultdict(set)
 
-        for ja_text, vi_text, pid in pairs:
-            ja_ngrams = self._ja_ngrams(ja_text)
-            vi_ngrams = self._vi_ngrams(vi_text)
-            if not ja_ngrams or not vi_ngrams:
-                continue
+        for ja_ngrams, vi_ngrams, pid in tokenized_records:
             for j in ja_ngrams:
                 ja_count[j] += 1
             for v in vi_ngrams:
@@ -382,9 +404,10 @@ class GlossaryMiner:
 
 
 def write_learned_glossary(candidates: List[dict], project_name: str) -> str:
-    """Ghi candidates ra glossary_<film>.learned.yaml. Trả về path."""
+    """Ghi candidates ra glossaries/glossary_<film>.learned.yaml (hoặc thư mục hiện tại). Trả về path."""
     safe = re.sub(r'[^\w\-_]', '_', project_name or 'unknown')
-    path = f'glossary_{safe}.learned.yaml'
+    filename = f'glossary_{safe}.learned.yaml'
+    path = os.path.join('glossaries', filename) if os.path.isdir('glossaries') else filename
     with open(path, 'w', encoding='utf-8') as f:
         f.write(f'# glossary_{safe}.learned.yaml\n')
         f.write('# TU HOC TUONG DOI — file do pipeline sinh ra, KHONG sua tay.\n')

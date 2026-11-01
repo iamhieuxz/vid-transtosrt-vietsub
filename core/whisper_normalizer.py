@@ -79,15 +79,43 @@ _WHISPER_KANA_PATTERN = re.compile(
 )
 
 
+# Sửa lỗi đồng âm tiếng Nhật (JA -> JA) mà Whisper hay ghi sai chữ Hán trong câu dài
+_WHISPER_HOMOPHONE_FIXES = [
+    ('教授に仕上げ', '今日中に仕上げ'),
+    ('教授に終わらせ', '今日中に終わらせ'),
+    ('激無', '激務'),
+    ('家庭を借りみなかった', '家庭を顧みなかった'),
+    ('仲出し', '中出し'),
+    ('中だし', '中出し'),
+    ('寝引き', '値引き'),
+    ('おなでたん', 'オナネタ'),
+    ('おなねた', 'オナネタ'),
+    ('閲覧車', '閲覧者'),
+    # ROE-459: 媚薬 (biyaku - thuốc kích dục) bị ghi nhầm thành 美薬 (thuốc đẹp) / 美役 (vai đẹp)
+    ('美薬', '媚薬'),
+    ('美役', '媚薬'),
+    # ROE-459: tên nhân vật しんぼう bị ghi thành 辛抱 (nhẫn nại) khi đi kèm lời cảm ơn/gọi tên
+    ('辛抱ありがとう', 'しんぼう、ありがとう'),
+    # ROE-459: しんぼう bị Whisper tách thành 彼氏 陰謀 (đồng âm kareshi inbō) -> "bạn trai anh ấy"
+    ('彼氏 陰謀', 'しんぼう'),
+    ('彼氏陰謀', 'しんぼう'),
+]
+
+
 def _normalize_whisper_text(text: str) -> str:
     """Chuẩn hóa 1 dòng text từ Whisper.
 
-    - CHỈ thay khi text ngắn (<=10 chars kana/romaji) — Whisper để sót nguyên
-    - KHÔNG thay giữa câu dài (sẽ gây JA + VI lẫn lộn)
+    - Sửa các từ đồng âm chữ Hán bị Whisper ghi nhầm (VD: 教授に仕上げ -> 今日中に仕上げ, 激無 -> 激務)
+    - CHỈ thay kana->VI khi text ngắn (<=10 chars kana/romaji) — Whisper để sót nguyên
+    - KHÔNG thay kana->VI giữa câu dài (sẽ gây JA + VI lẫn lộn)
     - Trim space thừa
     """
     if not text or not text.strip():
         return text
+
+    for wrong_ja, right_ja in _WHISPER_HOMOPHONE_FIXES:
+        if wrong_ja in text:
+            text = text.replace(wrong_ja, right_ja)
 
     # Check: text có chứa kanji không? Nếu có → câu dài có cấu trúc, KHÔNG normalize
     # (chỉ những câu toàn hiragana/katakana ngắn Whisper mới để sót)

@@ -59,11 +59,31 @@ class WhisperTranscriber:
         self.language = config.get('language', None)
         self.beam_size = config.get('beam_size', 5)
         self.vad_filter = config.get('vad_filter', True)
-        self.min_silence_duration_ms = config.get('min_silence_duration_ms', 500)
-        self.speech_pad_ms = config.get('speech_pad_ms', 300)
+        self.vad_threshold = config.get('vad_threshold', 0.35)
+        self.min_silence_duration_ms = config.get('min_silence_duration_ms', 400)
+        self.speech_pad_ms = config.get('speech_pad_ms', 400)
+        self.max_speech_duration_s = config.get('max_speech_duration_s', 15)
+        self.no_speech_threshold = config.get('no_speech_threshold', 0.85)
+        self.log_prob_threshold = config.get('log_prob_threshold', -1.35)
+        self.compression_ratio_threshold = config.get('compression_ratio_threshold', 2.8)
+        self.condition_on_previous_text = config.get('condition_on_previous_text', False)
+        self.initial_prompt = config.get('initial_prompt', None)
+        self.hotwords = config.get('hotwords', None)
+        self.adult_boost = bool(config.get('adult_boost', False))
+        # Tiền xử lý âm thanh: chuỗi ffmpeg -af (vd 'highpass=f=80,dynaudnorm=f=150:g=15')
+        # + hệ số volume. Mặc định rỗng/1.0 = không lọc, giữ hành vi cũ.
+        # Tên nhân vật JA của phim đang chạy, nối vào initial_prompt để Whisper bớt nghe sai tên.
+        self.prompt_names = [n for n in (config.get('prompt_names') or []) if n]
+        self.audio_filter = (config.get('audio_filter') or '').strip()
+        self.audio_volume = float(config.get('audio_volume', 1.0) or 1.0)
         # Cue vua 6s (chuẩn phụ đề). Segment Whisper dài hơn sẽ được tách
         # bằng word timestamps; rỗng thì fallback về 1 cue gốc.
         self.max_cue_ms = config.get('max_cue_ms', 6000)
+        # Ngưỡng cứng: KHÔNG cue nào dài quá 12s, kể cả khi Whisper gán sai
+        # timestamp qua cảnh im lặng (JUR-412 từng có cue 51 phút).
+        self.hard_cue_cap_ms = config.get('hard_cue_cap_ms', 12000)
+        # Khoảng lặng (giây) bắt buộc ngắt cue trước khi nối từ kế tiếp.
+        self.hard_gap_split_s = config.get('hard_gap_split_s', 1.2)
         # Cờ cho phép auto-fallback về CPU khi GPU load fail (OOM / thiếu DLL).
         # Mặc định True vì GPU 4GB không chạy nổi large-v3.
         self.allow_cpu_fallback = config.get('allow_cpu_fallback', True)
@@ -212,7 +232,7 @@ class WhisperTranscriber:
             f"[TRANSCRIBER] Model '{self.model_size}' not cached "
             f"({info['total_mb']}MB hiện có). Tải về từ HuggingFace Hub..."
         )
-        console.print(
+        print(
             f"\n[DOWNLOAD] Model '{self.model_size}' chưa có sẵn.\n"
             f"         Đang tải từ HuggingFace Hub (lần đầu mất vài phút)...\n",
             flush=True
@@ -307,8 +327,13 @@ class WhisperTranscriber:
         ])
         if duration_seconds is not None:
             cmd.extend(["-t", str(max(0.0, float(duration_seconds)))])
+        af_chain = [f for f in (self.audio_filter,) if f]
+        if self.audio_volume != 1.0:
+            af_chain.append(f"volume={self.audio_volume}")
+        cmd.append("-vn")
+        if af_chain:
+            cmd.extend(["-af", ",".join(af_chain)])
         cmd.extend([
-            "-vn",
             "-acodec", "pcm_s16le",
             "-ar", "16000",
             "-ac", "1",
@@ -341,16 +366,57 @@ class WhisperTranscriber:
             lang = language or self.language
             logger.info(f"[TRANSCRIBER] Starting transcription (language={lang})")
 
-            segments, info = self.model.transcribe(
-                audio_path,
+            vad_params = dict(
+                threshold=self.vad_threshold,
+                min_silence_duration_ms=self.min_silence_duration_ms,
+                speech_pad_ms=self.speech_pad_ms,
+                max_speech_duration_s=self.max_speech_duration_s,
+            )
+            transcribe_kwargs = dict(
                 language=lang,
                 beam_size=self.beam_size,
                 vad_filter=self.vad_filter,
-                vad_parameters=dict(
-                    min_silence_duration_ms=self.min_silence_duration_ms,
-                    speech_pad_ms=self.speech_pad_ms,
-                ),
+                vad_parameters=vad_params,
                 word_timestamps=True,
+                no_speech_threshold=self.no_speech_threshold,
+                log_prob_threshold=self.log_prob_threshold,
+                compression_ratio_threshold=self.compression_ratio_threshold,
+                condition_on_previous_text=self.condition_on_previous_text,
+            )
+            # Group A3 + Uncen Adult Boost: Truyền initial_prompt + hotwords tiếng Nhật nhạy cảm
+            # để Whisper nhận diện chuẩn thoại rên/thì thầm và tránh lỗi đồng âm (中出し vs 仲出し, 今日中に vs 教授に)
+            if (lang or '').lower() in ('ja', 'japanese'):
+                try:
+                    import inspect
+                    sig = inspect.signature(self.model.transcribe)
+                    # Bo tu 18+ chi bat khi adult_boost (main.py set theo translation.mode=uncen):
+                    # gợi ý mạnh làm Whisper bịa từ đó ở đoạn im lặng/nhạc nền của phim thường.
+                    adult = getattr(self, 'adult_boost', False)
+                    default_hotwords = getattr(self, 'hotwords', None) or (
+                        "中出し 気持ちいい 気持ち良い イク イッちゃう おまんこ おちんちん ちんぽ "
+                        "射精 フェラ 舐めて 奥まで 濡れてる 感じてる 恥ずかしい 変態 "
+                        "彼氏 彼女 旦那 主人 奥さん 夫婦 セフレ 不倫 浮気 婚約 今日中に 激務"
+                        if adult else ""
+                    )
+                    default_prompt = getattr(self, 'initial_prompt', None) or (
+                        "気持ちいい、イク、イッちゃう、だめ、やめて、おまんこ、おちんちん、ちんぽ、"
+                        "中出し、射精、フェラ、舐めて、奥まで、激しい、濡れてる、感じてる、恥ずかしい、"
+                        "変態、旦那、主人、奥さん、夫婦、不倫、浮気、今日中に、激務"
+                        if adult else ""
+                    )
+                    if self.prompt_names:
+                        default_prompt = "、".join([p for p in [default_prompt] if p] + self.prompt_names)
+                        default_hotwords = " ".join([h for h in [default_hotwords] if h] + self.prompt_names)
+                    if 'hotwords' in sig.parameters and default_hotwords:
+                        transcribe_kwargs['hotwords'] = default_hotwords
+                    if 'initial_prompt' in sig.parameters and default_prompt:
+                        transcribe_kwargs['initial_prompt'] = default_prompt
+                except Exception:
+                    pass
+
+            segments, info = self.model.transcribe(
+                audio_path,
+                **transcribe_kwargs,
             )
 
             segment_list = list(segments)
@@ -419,34 +485,77 @@ class WhisperTranscriber:
         trả về đúng 1 cue theo timestamp gốc của segment.
         """
         max_ms = self.max_cue_ms
+        hard_cap_ms = getattr(self, 'hard_cue_cap_ms', 12000)
         duration = (segment.end - segment.start) * 1000
 
         # Segment ngắn hoặc không có word info → giữ nguyên 1 cue
         words = getattr(segment, 'words', None)
         if duration <= max_ms or not words:
+            start = segment.start
+            end = min(segment.end, start + hard_cap_ms / 1000)
+            if not words and segment.end > end:
+                # Không có word timestamps: chia text theo dấu câu và phân bổ thời
+                # gian theo độ dài để KHÔNG mất chữ mà vẫn cap 12s/cue.
+                return self._split_by_proportion(
+                    segment.text.strip(), start, segment.end, hard_cap_ms, offset,
+                )
             return [(
-                self._format_time(segment.start + offset),
-                self._format_time(segment.end + offset),
+                self._format_time(start + offset),
+                self._format_time(end + offset),
                 segment.text.strip(),
             )]
 
-        def _eff_start(w):
-            w_len = max(1, len((getattr(w, 'word', '') or '').strip()))
-            max_word_dur = max(1.2, min(3.0, w_len * 0.35))
-            if (w.end - w.start) > max_word_dur:
-                return max(w.start, w.end - max(0.4, w_len * 0.18))
-            return w.start
+        # Chuẩn hóa mốc thời gian từng từ TRƯỚC khi ghép cue.
+        # Whisper hay kéo `end` của 1 từ vượt qua cảnh im lặng dài (mất hàng chục
+        # phút) → cue dài 51 phút (JUR-412) và từ đầu câu sau bị dồn vào đuôi
+        # cue trước ('確' | '実に', '離婚' | 'の', 'ち' | 'んぽ').
+        norm_words = []
+        n_words = len(words)
+        for idx_w, w in enumerate(words):
+            w_start = float(w.start)
+            w_end = float(w.end)
+            if idx_w + 1 < n_words:
+                w_end = min(w_end, float(words[idx_w + 1].start))
+            est = self._estimate_speech_s(getattr(w, 'word', '') or '')
+            if w_end - w_start > max(4.0, est * 3):
+                # Từ bị kéo giãn qua im lặng → giới hạn theo độ dài lời nói thực tế.
+                w_end = w_start + est
+            norm_words.append((w, w_start, w_end))
 
         cues = []
         chunk = []
-        for word in words:
-            chunk.append(word)
-            chunk_ms = (chunk[-1].end - _eff_start(chunk[0])) * 1000
-            chunk_text = ''.join(w.word for w in chunk).strip()
-            # Cắt khi từ này kết thúc mệnh đề VÀ chunk đã đủ dài, hoặc khi
-            # chunk vượt ngưỡng cứng mà không có dấu câu để bám (1.5×) và đủ >= 5 ký tự.
-            if (chunk_ms >= max_ms and self._ends_clause(word)) or (
-                chunk_ms >= max_ms * 1.5 and len(chunk_text) >= 5
+        # Khoảng lặng tối thiểu (giây) buộc phải ngắt cue TRƯỚC khi thêm từ kế tiếp.
+        hard_gap_s = float(getattr(self, 'hard_gap_split_s', 1.2) or 1.2)
+        for idx_w, (word, w_start, w_end) in enumerate(norm_words):
+            if chunk:
+                gap_before = w_start - chunk[-1][2]
+                if gap_before >= hard_gap_s:
+                    cues.append(chunk)
+                    chunk = []
+            chunk.append((word, w_start, w_end))
+            chunk_ms = (chunk[-1][2] - chunk[0][1]) * 1000
+            chunk_text = ''.join(x[0].word for x in chunk).strip()
+            next_word = norm_words[idx_w + 1][0] if idx_w + 1 < n_words else None
+
+            # Tránh cắt ngay giữa 1 từ ghép tiếng Nhật (khi 2 mảnh sát nhau < 0.08s và không kết thúc bằng trợ từ/dấu câu)
+            w_str = (word.word or '').strip()
+            gap_to_next = (
+                norm_words[idx_w + 1][1] - w_end if idx_w + 1 < n_words else 999.0
+            )
+            is_natural_break = (
+                self._ends_clause(word)
+                or gap_to_next >= 0.12
+                or (bool(w_str) and w_str[-1] in 'はがをにへでとものやねよかからけどし、。！？!?…')
+            )
+
+            # Cắt khi:
+            # 1. Đạt max_ms và có dấu kết mệnh đề
+            # 2. Đạt 1.25x max_ms (>= 5 ký tự) tại điểm ngắt tự nhiên (trợ từ / khoảng nghỉ >= 0.12s)
+            # 3. Đạt ngưỡng cứng 12s — KHÔNG cue nào được dài quá 12s
+            if (
+                (chunk_ms >= max_ms and self._ends_clause(word))
+                or (chunk_ms >= max_ms * 1.25 and len(chunk_text) >= 5 and is_natural_break)
+                or chunk_ms >= hard_cap_ms
             ):
                 cues.append(chunk)
                 chunk = []
@@ -455,19 +564,62 @@ class WhisperTranscriber:
 
         result = []
         for group in cues:
-            text = ''.join(w.word for w in group).strip()
+            text = ''.join(x[0].word for x in group).strip()
             if not text:
                 continue
+            start_s = group[0][1]
+            end_s = min(group[-1][2], start_s + hard_cap_ms / 1000)
             result.append((
-                self._format_time(_eff_start(group[0]) + offset),
-                self._format_time(group[-1].end + offset),
+                self._format_time(start_s + offset),
+                self._format_time(end_s + offset),
                 text,
             ))
         return result or [(
             self._format_time(segment.start + offset),
-            self._format_time(segment.end + offset),
+            self._format_time(min(segment.end, segment.start + hard_cap_ms / 1000) + offset),
             segment.text.strip(),
         )]
+
+    @staticmethod
+    def _estimate_speech_s(text: str) -> float:
+        """Ước lượng thời lượng lời nói (giây) từ độ dài text tiếng Nhật.
+
+        shortcut: ~6 ký tự/giây cho hội thoại Nhật; sai số chấp nhận được vì
+        chỉ dùng để chặn cue trôi qua cảnh im lặng, cần thay bằng forced
+        alignment khi đòi độ chính xác tuyệt đối.
+        """
+        clean = (text or '').strip()
+        if not clean:
+            return 0.5
+        return len(clean) / 6.0 + 0.4
+
+    def _split_by_proportion(self, text, start, end, hard_cap_ms, offset):
+        """Chia text (không có word timestamps) theo dấu câu + phân bổ thời gian.
+
+        Không có word timestamps thì không biết lời nói nằm ở đâu trong segment,
+        nên phân bổ theo tỉ lệ độ dài câu rồi cap mỗi cue ở `hard_cap_ms` —
+        đảm bảo KHÔNG cue nào trôi qua cảnh im lặng (JUR-412 từng có 51 phút).
+        """
+        text = (text or '').strip()
+        if not text:
+            return []
+        chunks = [c.strip() for c in re.split(r'(?<=[。！？!?…])', text) if c.strip()]
+        if not chunks:
+            chunks = [text]
+        total_len = sum(len(c) for c in chunks) or 1
+        window = max(0.1, end - start)
+        cap_s = hard_cap_ms / 1000.0
+        out = []
+        cur = start
+        for c in chunks:
+            dur = min(window * (len(c) / total_len), cap_s)
+            out.append((
+                self._format_time(cur + offset),
+                self._format_time(cur + dur + offset),
+                c,
+            ))
+            cur += dur
+        return out
 
     @staticmethod
     def _ends_clause(word) -> bool:
@@ -525,16 +677,24 @@ class WhisperTranscriber:
         if text.lower() in noise_words:
             return True
 
-        # 4. Lap lai ky tu (thuong la loi nhan dien)
-        # vd: "アアアア" hoặc "eeeee"
-        if re.match(r'^(.)\1{3,}$', text):
+        # 4. Lap lai ky tu (thuong la loi nhan dien, vd: "eeeee" hoac "-----")
+        # NHUNG giu lai tieng keu cam xuc tieng Nhat (vd: "ああああ", "んんんん")
+        if re.match(r'^([^\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF])\1{3,}$', text):
             return True
 
-        # 5. Lap lai cum 2-3 ky tu nhieu lan (thuong la loi nhan dien)
-        # vd: "アアホアアホ" hoặc "yeah yeah yeah"
+        # 5. Lap lai cum 2-3 ky tu nhieu lan:
+        # CHI loc neu la chu Latin/Katakana vo nghia (vd: "yeah yeah yeah", "アアホアアホ"),
+        # TUYET DOI KHONG loc cac tu cam xuc nguoi lon tieng Nhat hay lap 3 lan
+        # nhu "ダメダメダメ", "イクイクイク", "やめてやめてやめて", "いやいやいや", "待って待って待って"!
+        _ADULT_REPEAT_WHITELIST = (
+            'だめ', 'ダメ', 'いく', 'イク', 'やめて', 'いや', 'イヤ', 'まって', '待って',
+            'すごい', 'やばい', 'ヤバい', 'そこ', 'ここ', 'もっと', 'あかん', 'むり', '無理',
+            'すき', '好き', '気持ち', 'きもち', 'いたい', '痛い', 'あつい', '熱い',
+        )
         repeat_pattern = re.match(r'^(.{2,3})(\s*\1){2,}$', text, re.IGNORECASE)
         if repeat_pattern:
-            return True
+            if not any(w in text for w in _ADULT_REPEAT_WHITELIST) and not re.search(r'[\u3040-\u309F\u4E00-\u9FFF]', text):
+                return True
 
         # 6. Do dai qua ngan (thuong la noise)
         if len(text) <= 2 and not re.search(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]', text):
