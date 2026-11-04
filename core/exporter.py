@@ -28,8 +28,10 @@ def get_output_folder(base_output_folder: str, project_name: str) -> str:
     # Chi dinh folder tu base_output_folder, bat ke file co ton tai hay khong
     abs_base = os.path.abspath(base_output_folder)
     if os.path.isdir(abs_base):
-        # La folder ton tai
-        output_folder = os.path.join(abs_base, folder)
+        if os.path.basename(abs_base.rstrip('\\/')).lower() == folder.lower():
+            output_folder = abs_base
+        else:
+            output_folder = os.path.join(abs_base, folder)
     elif os.path.isfile(abs_base) or not os.path.exists(abs_base):
         # La file hoac path khong ton tai -> lay folder cha
         parent = os.path.dirname(abs_base)
@@ -43,11 +45,19 @@ def get_output_folder(base_output_folder: str, project_name: str) -> str:
 
 
 def _sanitize_folder_name(name: str) -> str:
-    """Loại bỏ ký tự không hợp lệ cho tên folder."""
+    """Loại bỏ ký tự không hợp lệ cho tên folder.
+
+    Audit S-1: phải chặn '.', '..', '...' — nếu không, name='..' giữ nguyên và
+    os.path.join(output_dir, '..') sẽ trỏ ra thư mục cha (path traversal).
+    Slash đã bị thay bằng '_' nên '../..' vốn đã an toàn; ở đây chỉ cần xử lý
+    trường hợp tên chỉ gồm toàn dấu chấm.
+    """
     import re
-    sanitized = re.sub(r'[<>:"/\\|?*]', '_', name)
-    sanitized = sanitized.strip()
-    return sanitized if sanitized else "output"
+    sanitized = re.sub(r'[<>:"/\\|?*]', '_', str(name)).strip()
+    # Tên rỗng hoặc chỉ gồm dấu chấm -> không dùng được làm tên folder.
+    if not sanitized or not sanitized.strip('.'):
+        return "output"
+    return sanitized
 
 
 def resolve_srt_path(base_output_folder: str, project_name: str) -> str:
@@ -60,17 +70,7 @@ def resolve_srt_path(base_output_folder: str, project_name: str) -> str:
              => SRT    = E:/HIDE/JAV/EYAN-029/EYAN-029.srt
     """
     folder = _sanitize_folder_name(project_name)
-    abs_base = os.path.abspath(base_output_folder)
-
-    if os.path.isdir(abs_base):
-        output_dir = os.path.join(abs_base, folder)
-    elif os.path.isfile(abs_base) or not os.path.exists(abs_base):
-        parent = os.path.dirname(abs_base)
-        output_dir = os.path.join(parent, folder)
-    else:
-        output_dir = os.path.join(os.getcwd(), folder)
-
-    os.makedirs(output_dir, exist_ok=True)
+    output_dir = get_output_folder(base_output_folder, project_name)
     return os.path.join(output_dir, f"{folder}.srt")
 
 
@@ -91,19 +91,7 @@ def get_output_paths(base_output_folder: str, project_name: str) -> dict:
       whisper= E:/HIDE/JAV/EYAN-029/EYAN-029_whisper.srt
     """
     folder = _sanitize_folder_name(project_name)
-    abs_base = os.path.abspath(base_output_folder)
-
-    # Chi dinh folder tu base_output_folder, bat ke file co ton tai hay khong
-    if os.path.isdir(abs_base):
-        output_dir = os.path.join(abs_base, folder)
-    elif os.path.isfile(abs_base) or not os.path.exists(abs_base):
-        # La file hoac path khong ton tai -> lay folder cha
-        parent = os.path.dirname(abs_base)
-        output_dir = os.path.join(parent, folder)
-    else:
-        output_dir = os.path.join(os.getcwd(), folder)
-
-    os.makedirs(output_dir, exist_ok=True)
+    output_dir = get_output_folder(base_output_folder, project_name)
 
     return {
         'folder': output_dir,
@@ -252,7 +240,7 @@ def _atomic_write_srt(items, output_path, use_original=False):
         ),
     )
 
-    untranslated_count = 0
+    untranslated: list = []
     subs = pysrt.SubRipFile()
     for idx, item in enumerate(sorted_items, start=1):
         if use_original:
@@ -260,7 +248,9 @@ def _atomic_write_srt(items, output_path, use_original=False):
         else:
             text = item.get('translated_text') or ''
             if not text:
-                untranslated_count += 1
+                # Audit C-3: ghi lại sub_index để debug được sub nào bị mất
+                # (trước đây chỉ đếm tổng, không biết sub nào / window nào).
+                untranslated.append(item.get('sub_index', idx))
                 original = item.get('original_text', '')
                 text = f"[UNTRANSLATED] {original}"
 
@@ -278,8 +268,13 @@ def _atomic_write_srt(items, output_path, use_original=False):
             os.remove(output_path)
         os.rename(tmp_path, output_path)
 
-    if untranslated_count > 0:
-        logger.warning(f"{STATUS_ICONS['warning']} {untranslated_count} subtitle(s) were not translated and are marked as [UNTRANSLATED]")
+    if untranslated:
+        preview = untranslated[:20]
+        more = "" if len(untranslated) <= 20 else f" … (+{len(untranslated) - 20} more)"
+        logger.warning(
+            f"{STATUS_ICONS['warning']} {len(untranslated)} subtitle(s) were not translated "
+            f"and are marked as [UNTRANSLATED]: sub_index={preview}{more}"
+        )
 
 
 class Exporter:

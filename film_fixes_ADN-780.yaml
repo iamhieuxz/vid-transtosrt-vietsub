@@ -1,0 +1,54 @@
+# film_fixes_ADN-780.yaml
+# Fix pack riêng của bộ ADN-780 — CHỈ nạp khi project.name = "ADN-780".
+# Chuyển từ hardcode trong core/whisper_normalizer.py + core/post_processor.py
+# (review 2026-11-01: data phim không được nằm trong code vì sẽ bôi lỗi sang phim khác).
+#
+# Schema: xem docstring core/film_fixes.py
+
+homophone:
+  - { from: 正規雇用の仕事をてんてんと, to: 非正規雇用の仕事を転々と }
+  - { from: 生きごはん大きい, to: 鳴き声大きい }
+  - { from: 熱心しましょう, to: 内緒にしましょう }
+  - { from: 就活典, to: 就活生 }
+  - { from: 正処理, to: 性処理 }
+  - { from: 仲立ち, to: 中出し }
+  - { from: アッサムしちゃい, to: 発散しちゃい }
+  - { from: イッチな姿, to: エッチな姿 }
+  - { from: イビスされる, to: イキそうになる }
+  - { from: きゃぐきゃだ, to: ぐちゃぐちゃだ }
+  # Tên riêng ツヨシ bị nghe nhầm khi đi kèm hậu tố
+  - { from: 強いさん, to: ツヨシさん }
+  - { from: あつよいさん, to: あ、ツヨシさん }
+  - { from: つよいさん, to: ツヨシさん }
+  - { from: ツユヒ君, to: ツヨシ君 }
+  - { from: ツユヒくん, to: ツヨシくん }
+  - { from: つゆきくん, to: ツヨシくん }
+  - { from: つゆき君, to: ツヨシ君 }
+  - { from: 強石さん, to: ツヨシさん }
+  - { from: 強しさん, to: ツヨシさん }
+  - { from: 強し君, to: ツヨシ君 }
+  - { from: 強しくん, to: ツヨシくん }
+  - { from: 強し優しい, to: ツヨシ優しい }
+  - { from: ゆう子でどう, to: いうことでどう }
+  - { from: ゆうことでどう, to: いうことでどう }
+
+mora_clip:
+  - { pattern: '^\s*さんのまんこ', replace: お母さんのまんこ }
+  - { pattern: '^\s*さんの\s*(エッチ|イッチ)', replace: 'お母さんの\1' }
+  - { pattern: '^\s*関だから', replace: 玄関だから }
+  - { pattern: '^\s*活(は|はどう|が|を|の|も)', replace: '就活\1' }
+  - { pattern: '^\s*たいなお母さん', replace: みたいなお母さん }
+
+source_conditioned:
+  - { source: 娘を身ごもっ, target: '\bcô ấy mang thai\b', replace: tôi mang thai con gái }
+  - { source: 一人で娘を育て, target: '\bnuôi cô ấy một mình\b', replace: một mình nuôi con gái }
+  - { source: 私のようにはなってほしくない, target: '\bcô ấy giống tôi\b', replace: con bé khổ như tôi }
+  - { source: '(てんてんとしてきた|転々としてきた)', target: '\blàm việc toàn thời gian với hợp đồng chính thức\b', replace: làm đủ thứ công việc thời vụ bấp bênh }
+  - { source: 娘には笑っててほしい, target: '\btớ muốn con gái tớ thấy tớ cười\b', replace: tôi chỉ muốn con gái mình luôn mỉm cười }
+  - { source: ちんぽ見て, target: '\btớ (cũng đã )?nhìn dương vật của anh\b', replace: cô cứ nhìn dương vật của tôi }
+  - { source: 女王様, target: '\blà\s+Joo\b|\bJoo\b', replace: kiểu tiểu thư kiêu kỳ }
+  - { source: 誰かさん, target: '\bDai(?:-san)?\b', replace: ai đó }
+  - { source: '(強石さん|ツヨシさん|つよしさん|つゆきくん|ツヨシ君)', target: '\b(Oishi(?:-san)?|Tsuyuki(?:-kun)?)\b', replace: Tsuyoshi }
+  - { source: 城南大学, target: 'Đại học\s+Minamiyo', replace: Đại học Jonan }
+  - { source: '(いうことでどう|ゆう子でどう)', target: '\bYuko\s+thì\s+sao\b', replace: coi như vậy đi nhé }
+  - { source: お母さん, target: '^Mẹ con,\s*', replace: 'Mẹ ơi, ' }

@@ -1,7 +1,19 @@
 # glossary_learned.yaml
 # Tu vung uncen tu hoc xuyen suot nhieu du an (auto-generated).
 
+- source_term: 恥ずかしい
+  target_term: xấu hổ
+  context_hint: auto-learned (freq=5, films=3, confidence=1.0)
+
+- source_term: 濡れ
+  target_term: ướt
+  context_hint: auto-learned (freq=12, films=5, confidence=0.86)
+
 - source_term: 夫婦
   target_term: vợ chồng
-  context_hint: auto-learned (freq=3, films=3, confidence=0.75)
+  context_hint: auto-learned (freq=5, films=5, confidence=0.83)
+
+- source_term: 性欲
+  target_term: ham muốn tình
+  context_hint: auto-learned (freq=3, films=2, confidence=0.75)
 

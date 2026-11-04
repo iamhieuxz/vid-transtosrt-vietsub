@@ -456,3 +456,322 @@ def test_vram_pipeline_order_no_llm_precheck(tmp_path, monkeypatch):
 
 
 
+
+
+
+def test_qp0_2_and_qp0_3_pronoun_gender_lock_and_repeated_number_stripping():
+    """Q-P0.2 & Q-P0.3: Kiểm tra loại bỏ 'だ/する -> tớ/cậu', neo giới tính giải phẫu
+    và xóa triệt để tiền tố số lặp ('1. ', '2. 2. ') + dấu phẩy đầu câu."""
+    from core.ja_translator import (
+        _BASE_SYSTEM_PROMPT,
+        _LITERAL_SYSTEM_COMPACT,
+        _LITERAL_SYSTEM_COMPACT_UNCEN,
+        _clean_markdown,
+        _strip_leading_number,
+    )
+    from core.post_processor import RuleBasedPostProcessor
+
+    # 1. Prompt không còn ép 'だ/する → "tớ/cậu"'
+    assert 'だ/する → "tớ/cậu"' not in _BASE_SYSTEM_PROMPT
+    assert 'だ/する → "tớ/cậu"' not in _LITERAL_SYSTEM_COMPACT
+    assert 'だ/する → "tớ/cậu"' not in _LITERAL_SYSTEM_COMPACT_UNCEN
+    assert "まんこ" in _LITERAL_SYSTEM_COMPACT_UNCEN
+
+    # 2. Xóa số thứ tự lặp nhiều lần và dấu phẩy rác đầu dòng
+    assert _strip_leading_number("2. 2. Ừ, mẹ nói đúng nhỉ.") == "Ừ, mẹ nói đúng nhỉ."
+    assert _strip_leading_number("3. 3. À, mẹ nói vậy thì được rồi.") == "À, mẹ nói vậy thì được rồi."
+    assert _clean_markdown("1. 1. Nhìn này Miku, nước uống đây.") == "Nhìn này Miku, nước uống đây."
+    assert _strip_leading_number(", để em kiểm tra xem sao?") == "Để em kiểm tra xem sao?"
+
+    # 3. RuleBasedPostProcessor sửa lỗi giới tính giải phẫu & xưng hô mẹ-con thực tế từ ADN-780
+    #    (fix đặc thù phim giờ nằm trong film_fixes_ADN-780.yaml — review 2026-11-01)
+    from core.film_fixes import load_film_fixes
+    pp = RuleBasedPostProcessor()
+    pp.set_film_fixes(load_film_fixes("ADN-780"))
+    assert (
+        pp.process_line(
+            "Âm đạo của anh sướng quá nên tớ đã xuất tinh bên trong rồi",
+            source_text="お母さんのまんこ 気持ち良すぎて 中に出しちゃいました",
+        )
+        == "Âm đạo của mẹ sướng quá nên tôi đã xuất tinh bên trong rồi"
+    )
+    assert (
+        pp.process_line(
+            "Dù sao đi nữa, tớ cũng đã nhìn dương vật của anh suốt rồi.",
+            source_text="なんだかんだ ずっとちんぽ見てますね",
+        )
+        == "Dù sao đi nữa, cô cứ nhìn dương vật của tôi suốt rồi."
+    )
+    assert (
+        pp.process_line(
+            "Cô ấy mang thai khi tôi hai mươi tuổi",
+            source_text="娘を身ごもったのは、二十歳の頃",
+        )
+        == "Tôi mang thai con gái khi tôi hai mươi tuổi"
+    )
+    assert (
+        pp.process_line("2. 2. Ừ, mẹ nói đúng nhỉ.", source_text="遅いから家泊まってって")
+        == "Ừ, mẹ nói đúng nhỉ."
+    )
+    assert (
+        pp.process_line(", để em kiểm tra xem sao?", source_text="こっち確認しましょう?")
+        == "Để em kiểm tra xem sao?"
+    )
+
+
+def test_qp1_1_and_qp1_2_initial_mora_recovery_homophones_and_vad_pad(monkeypatch):
+    """Q-P1.1 & Q-P1.2: Kiểm tra khôi phục âm đầu bị VAD cắt cụt, từ đồng âm ADN-780 và speech_pad_ms.
+
+    Các fix đặc thù ADN-780 giờ nằm trong film_fixes_ADN-780.yaml (review 2026-11-01)
+    nên phải truyền film_fixes khi test.
+    """
+    from core.whisper_normalizer import _normalize_whisper_text
+    from core.transcriber import WhisperTranscriber
+    from core.film_fixes import load_film_fixes
+
+    fixes = load_film_fixes("ADN-780")
+
+    def norm(text):
+        return _normalize_whisper_text(text, film_fixes=fixes)
+
+    # 1. Khôi phục mora đầu câu (Initial Mora Recovery)
+    assert norm("しぶりに求められてどうです?") == "久しぶりに求められてどうです?"
+    assert norm("きい声出すと ミクさん 降りてきちゃいますよ") == "大きい声出すと ミクさん 降りてきちゃいますよ"
+    assert norm("持ちよくしてくださいよ") == "気持ちよくしてくださいよ"
+    assert norm("けてください") == "開けてください"
+    assert norm("関だから近所に聞こえますよ") == "玄関だから近所に聞こえますよ"
+    assert norm("活はどう 順調?") == "就活はどう 順調?"
+    assert norm("さんのまんこ 気持ち良すぎて") == "お母さんのまんこ 気持ち良すぎて"
+
+    # 2. Sửa từ đồng âm ngữ cảnh gia đình / 18+
+    assert norm("ミクが生きごはん大きいですもんね") == "ミクが鳴き声大きいですもんね"
+    assert norm("ミクには 熱心しましょうね") == "ミクには 内緒にしましょうね"
+    assert norm("就活典に 正処理お願いしてる") == "就活生に 性処理お願いしてる"
+    assert norm("ミクさんには 仲立ちしたことないのに") == "ミクさんには 中出ししたことないのに"
+    assert norm("全部 アッサムしちゃいましょう") == "全部 発散しちゃいましょう"
+    assert norm("さんの イッチな姿見てるから") == "お母さんのエッチな姿見てるから"
+    assert norm("正規雇用の仕事をてんてんとしてきた") == "非正規雇用の仕事を転々としてきた"
+
+    # 3. WhisperTranscriber mặc định speech_pad_ms >= 450ms
+    monkeypatch.setattr(WhisperTranscriber, "_check_model_cache", staticmethod(lambda ms: {"cached": True, "total_mb": 100}))
+    monkeypatch.setattr(WhisperTranscriber, "_load_model_with_fallback", lambda self: object())
+    wt = WhisperTranscriber({})
+    assert wt.speech_pad_ms >= 450
+    assert wt.min_silence_duration_ms >= 500
+
+
+def test_qp2_1_phonetic_character_name_clustering_and_unification():
+    """Q-P2.1: Kiểm tra gom cụm tên riêng biến âm (Tsuyoshi <-> Tsuyoi / Tsuyuhi) và sửa tên.
+
+    Review 2026-11-01: clustering chỉ gộp khi tên phụ hiếm (≤1/3 tần suất tên chính),
+    các homophone ADN-780 phải nạp qua film_fixes.
+    """
+    from core.ja_qa_checker import extract_character_names_from_lines
+    from core.post_processor import RuleBasedPostProcessor
+    from core.whisper_normalizer import _normalize_whisper_text
+    from core.film_fixes import load_film_fixes
+
+    fixes = load_film_fixes("ADN-780")
+
+    def norm(text):
+        return _normalize_whisper_text(text, film_fixes=fixes)
+
+    # 1. WhisperNormalizer sửa trực tiếp '強いさん' / 'つよいさん' / 'ツユヒ君' -> 'ツヨシさん' / 'ツヨシ君'
+    assert norm("強いさん 大手企業に就職してるんですって") == "ツヨシさん 大手企業に就職してるんですって"
+    assert norm("あつよいさん こんな朝早くから") == "あ、ツヨシさん こんな朝早くから"
+    assert norm("ミクがツユヒ君の家に 入り浸ってる") == "ミクがツヨシ君の家に 入り浸ってる"
+
+    # 2. Phonetic clustering gom biến thể HIẾM (ツユヒ) vào Tsuyoshi;
+    #    tần suất Tsuyoshi áp đảo nên được phép gộp.
+    sample_lines = [
+        "ミクの彼氏のツヨシと申します",
+        "ツヨシさん 大手企業に就職してるんですって",
+        "ミクとツヨシの馴れ初め",
+        "ツヨシさんは優しい人です",
+        "ミクがツユヒ君の家に 入り浸ってる",
+    ]
+    chars = extract_character_names_from_lines(sample_lines)
+    by_can = {c["canonical"]: c for c in chars}
+    assert "Tsuyoshi" in by_can
+    assert "Tsuyuhi" not in by_can
+    assert "Tsuyoi" in by_can["Tsuyoshi"]["mistaken_aliases"]
+    assert "Tsuyuhi" in by_can["Tsuyoshi"]["mistaken_aliases"]
+
+    # 3. RuleBasedPostProcessor tự động đổi Tsuyoi / Tsuyuhi -> Tsuyoshi
+    pp = RuleBasedPostProcessor()
+    pp.set_character_names(chars)
+    assert pp.process_line("Anh Tsuyoi làm ở công ty lớn.", source_text="強いさん") == "Anh Tsuyoshi làm ở công ty lớn."
+    assert pp.process_line("Cậu Tsuyuhi tốt bụng thật.", source_text="ツユヒ君") == "Cậu Tsuyoshi tốt bụng thật."
+
+
+def test_rp0_1_validator_word_boundary_and_no_false_mik_error():
+    """R-P0.1: Validator dùng ranh giới từ (\\b), không bao giờ báo lỗi giả ['mik', 'miku']
+    khi câu dịch viết đúng 'Miku', và tự động chuẩn hóa mistaken_aliases về canonical."""
+    from core.validator import Validator
+    from core.ja_qa_checker import _generate_mistaken_aliases
+
+    # 1. _generate_mistaken_aliases không sinh biến thể quá ngắn 'Mik' (< 4 ký tự)
+    miku_aliases = _generate_mistaken_aliases("Miku")
+    assert "Mik" not in miku_aliases
+    assert all(len(a) >= 4 for a in miku_aliases)
+
+    # 2. Ngay cả khi config cũ có 'Mik' trong mistaken_aliases, Validator vẫn dùng \b
+    # và không báo lỗi giả trên chữ 'Miku'
+    v = Validator()
+    v.character_names = [
+        {
+            "canonical": "Miku",
+            "aliases": ["みく", "ミク"],
+            "mistaken_aliases": ["Mik", "Mikku", "Mikuru"],
+        },
+        {
+            "canonical": "Tsuyoshi",
+            "aliases": ["つよし", "ツヨシ"],
+            "mistaken_aliases": ["Tuyoshi", "Tsuyoi", "Tsuyuki"],
+        },
+    ]
+    srcs = [
+        "みくは就活どう?",
+        "みくとつよしの馴れ初め",
+    ]
+    trans = [
+        "Miku, việc tìm việc thế nào rồi?",
+        "Chuyện tình của Mikku và Tsuyuki.",
+    ]
+    assert v.validate_window_content(srcs, trans) is True
+    # Tự động chuẩn hóa Mikku -> Miku và Tsuyuki -> Tsuyoshi ngay trong bước validate
+    assert trans[1] == "Chuyện tình của Miku và Tsuyoshi."
+
+
+def test_rp0_2_blacklist_joo_yuki_and_new_homophones():
+    """R-P0.2: Chặn trích xuất nhầm 女王様 -> Joo, つゆきくん -> Yuki, và sửa lỗi
+    誰かさん -> Dai-san, 強石さん -> Oishi, 城南大学 -> Đại học Jonan."""
+    from core.ja_qa_checker import extract_character_names_from_lines
+    from core.whisper_normalizer import _normalize_whisper_text
+    from core.post_processor import RuleBasedPostProcessor
+    from core.film_fixes import load_film_fixes
+
+    fixes = load_film_fixes("ADN-780")
+    raw_lines = [
+        "でも 女王様だから 婚前交渉は嫌だって言われて",
+        "もしもし みく つゆきくん来てるわよ",
+        "みくの彼氏のつよしと申します",
+        "誰かさんは朝食しこたま飲むんだろうな",
+        "強石さんから連絡あった",
+        "強し優しいよね",
+        "城南大学です",
+        "もっと素直になりましょうよ ゆう子でどう",
+    ]
+    norm_lines = [_normalize_whisper_text(l, film_fixes=fixes) for l in raw_lines]
+    assert norm_lines[1] == "もしもし みく ツヨシくん来てるわよ"
+    assert norm_lines[4] == "ツヨシさんから連絡あった"
+    assert norm_lines[5] == "ツヨシ優しいよね"
+    assert norm_lines[7] == "もっと素直になりましょうよ いうことでどう"
+
+    chars = extract_character_names_from_lines(norm_lines)
+    canonicals = {c["canonical"] for c in chars}
+    assert "Joo" not in canonicals
+    assert "Yuki" not in canonicals
+    assert "Miku" in canonicals
+    assert "Tsuyoshi" in canonicals
+
+    pp = RuleBasedPostProcessor()
+    pp.set_film_fixes(load_film_fixes("ADN-780"))
+    assert (
+        pp.process_line(
+            "Nhưng vì là Joo nên cô ấy nói không muốn quan hệ trước hôn nhân.",
+            source_text=raw_lines[0],
+        )
+        == "Nhưng vì kiểu tiểu thư kiêu kỳ nên cô ấy nói không muốn quan hệ trước hôn nhân."
+    )
+    assert (
+        pp.process_line(
+            "Dai-san chắc là uống rất nhiều vào bữa sáng nhỉ.",
+            source_text=raw_lines[3],
+        )
+        == "Ai đó chắc là uống rất nhiều vào bữa sáng nhỉ."
+    )
+    assert (
+        pp.process_line(
+            "Oishi gọi điện bảo là đã xong.",
+            source_text=raw_lines[4],
+        )
+        == "Tsuyoshi gọi điện bảo là đã xong."
+    )
+    assert (
+        pp.process_line(
+            "Tôi học ở Đại học Minamiyo.",
+            source_text=raw_lines[6],
+        )
+        == "Tôi học ở Đại học Jonan."
+    )
+    assert (
+        pp.process_line(
+            "Hãy thành thật hơn đi, Yuko thì sao?",
+            source_text=raw_lines[7],
+        )
+        == "Hãy thành thật hơn đi, coi như vậy đi nhé?"
+    )
+
+
+def test_rp1_1_polish_fallback_partial_recovery_and_compact_qa_prompt():
+    """R-P1.1: _polish_fallback giữ lại 5/6 dòng đã polish tốt bằng _map_numbered
+    và chỉ fallback về rough cho đúng 1 dòng bị thiếu."""
+    from unittest.mock import MagicMock
+    from core.ja_translator import JaTranslator, _QA_TEMPLATE
+
+    assert "CHỈ liệt kê những dòng CÓ LỖI" in _QA_TEMPLATE
+
+    t = JaTranslator.__new__(JaTranslator)
+    t.translator = MagicMock()
+    t.character_names = []
+    t.system_prompt = "SYSTEM"
+
+    source = [f"元の文{i}" for i in range(1, 7)]
+    rough = [f"bản thô {i}" for i in range(1, 7)]
+
+    # Model bỏ sót dòng 3 trong fallback numbered list (trả về 5/6 dòng: 1, 2, 4, 5, 6)
+    def fake_gen(prompt, temperature=None, **kw):
+        if "OUTPUT FORMAT" in prompt and "Trả về đúng" in prompt:
+            return "\n".join(f"{i}. đã trau chuốt {i}" for i in [1, 2, 4, 5, 6])
+        return "not json"
+
+    t.translator.generate.side_effect = fake_gen
+    out = t.polish_translate(source, rough)
+    assert out == [
+        "đã trau chuốt 1",
+        "đã trau chuốt 2",
+        "bản thô 3",
+        "đã trau chuốt 4",
+        "đã trau chuốt 5",
+        "đã trau chuốt 6",
+    ]
+
+
+def test_rp1_2_sub_merger_remaining_split_words():
+    """R-P1.2: SubMerger khâu 5 mẫu từ bị cắt còn sót trong ADN-780 Lần 2
+    (一+日, 可愛+い, そした+ら, わか+んない, 濡+らしてる)."""
+    from core.sub_merger import _heal_split_tokens_across_cues
+
+    cues = [
+        {"index": 58, "start": "00:18:10,000", "end": "00:18:12,000", "text": "おはようございます 一"},
+        {"index": 59, "start": "00:18:12,100", "end": "00:18:15,000", "text": "日何人くらいの話聞くんですか"},
+        {"index": 73, "start": "00:22:01,000", "end": "00:22:03,000", "text": "そんな照れてるところも可愛"},
+        {"index": 74, "start": "00:22:03,100", "end": "00:22:05,000", "text": "いじゃないですか"},
+        {"index": 83, "start": "00:24:01,000", "end": "00:24:03,000", "text": "そんなこと言わないで そした"},
+        {"index": 84, "start": "00:24:03,100", "end": "00:24:05,000", "text": "ら みくはなんて"},
+        {"index": 100, "start": "00:31:01,000", "end": "00:31:03,000", "text": "それは わか"},
+        {"index": 101, "start": "00:31:03,100", "end": "00:31:05,000", "text": "んないですよ お母さんだってこんなに濡"},
+        {"index": 102, "start": "00:31:05,100", "end": "00:31:07,000", "text": "らしてるじゃないですか"},
+    ]
+    healed = _heal_split_tokens_across_cues(cues)
+    assert healed[0]["text"] == "おはようございます"
+    assert healed[1]["text"] == "一日何人くらいの話聞くんですか"
+    assert healed[2]["text"] == "そんな照れてるところも"
+    assert healed[3]["text"] == "可愛いじゃないですか"
+    assert healed[4]["text"] == "そんなこと言わないで"
+    assert healed[5]["text"] == "そしたら みくはなんて"
+    assert healed[6]["text"] == "それは"
+    assert healed[7]["text"] == "わかんないですよ お母さんだってこんなに"
+    assert healed[8]["text"] == "濡らしてるじゃないですか"
+

@@ -16,38 +16,38 @@
 # Schema: source_term / target_term / context_hint
 
 - source_term: おちんちん
-  target_term: dương vật
-  context_hint: từ thân mật, KHÔNG dịch "cậu nhỏ"
+  target_term: con cặc
+  context_hint: từ thân mật/khẩu ngữ, KHÔNG dịch "cậu nhỏ" hay "dương vật"
 - source_term: ペニス
   target_term: dương vật
   context_hint: từ y khoa katakana, cùng nghĩa
 - source_term: ちんこ
-  target_term: dương vật
-  context_hint: từ thô, tiếng lóng, KHÔNG dịch "cậu nhỏ"
+  target_term: con cặc
+  context_hint: từ thô, tiếng lóng, KHÔNG dịch "cậu nhỏ" hay "dương vật"
 - source_term: ちんぽ
-  target_term: dương vật
-  context_hint: biến thể của ちんこ, KHÔNG dịch "cậu nhỏ"
+  target_term: con cặc
+  context_hint: biến thể của ちんこ, KHÔNG dịch "cậu nhỏ" hay "dương vật"
 - source_term: 亀頭
-  target_term: đầu dương vật
-  context_hint: ''
+  target_term: quy đầu
+  context_hint: đầu dương vật / đầu cặc
 - source_term: 生殖器
   target_term: bộ phận sinh dục
-  context_hint: nếu là dương vật thì dùng "dương vật", tránh y khoa cứng
+  context_hint: nếu là con cặc thì dùng "con cặc", tránh y khoa cứng
 - source_term: 膣
-  target_term: âm đạo
-  context_hint: ''
+  target_term: bướm
+  context_hint: vùng kín nữ, KHÔNG dịch y khoa "âm đạo"
 - source_term: 膣内
-  target_term: bên trong âm đạo
-  context_hint: KHÔNG giảm nhẹ
+  target_term: sâu bên trong
+  context_hint: bên trong bướm, KHÔNG giảm nhẹ, KHÔNG dùng "bên trong âm đạo"
 - source_term: 阴道
-  target_term: âm đạo
+  target_term: bướm
   context_hint: ''
 - source_term: まんこ
-  target_term: âm đạo
-  context_hint: từ thô chỉ âm đạo, KHÔNG né tránh
+  target_term: bướm
+  context_hint: từ thô chỉ vùng kín nữ, KHÔNG né tránh, KHÔNG dịch y khoa "âm đạo"
 - source_term: おまんこ
-  target_term: âm đạo
-  context_hint: từ thân mật/thô chỉ âm đạo, KHÔNG né tránh
+  target_term: bướm
+  context_hint: từ thân mật/thô chỉ vùng kín nữ, KHÔNG né tránh, KHÔNG dịch y khoa "âm đạo"
 - source_term: おっぱい
   target_term: vú
   context_hint: ngực phụ nữ trong ngữ cảnh tình dục
@@ -58,23 +58,23 @@
   target_term: tinh dịch
   context_hint: KHÔNG dùng "tinh trùng"
 - source_term: 射精
-  target_term: xuất tinh
+  target_term: bắn tinh
   context_hint: KHÔNG dịch "phóng thích" / "lên đỉnh"
 - source_term: 中出し
-  target_term: xuất tinh trong
-  context_hint: KHÔNG giảm nhẹ
+  target_term: bắn vào trong
+  context_hint: KHÔNG giảm nhẹ, KHÔNG dịch "xuất tinh trong" cứng nhắc
 - source_term: 仲出し
-  target_term: xuất tinh trong
-  context_hint: Whisper hay viết nhầm 中出し thành 仲出し (đồng âm), dịch "xuất tinh trong"
+  target_term: bắn vào trong
+  context_hint: Whisper hay viết nhầm 中出し thành 仲出し (đồng âm), dịch "bắn vào trong"
 - source_term: 中に出す
-  target_term: xuất tinh bên trong
+  target_term: bắn vào trong
   context_hint: xuất tinh vào bên trong, KHÔNG dịch "đưa ra trong"
 - source_term: 精液を出す
-  target_term: xuất tinh
+  target_term: bắn tinh
   context_hint: trong ngữ cảnh tình dục
 - source_term: 無断中出し
-  target_term: xuất tinh trong không xin phép
-  context_hint: tự ý xuất tinh trong
+  target_term: tự ý bắn vào trong
+  context_hint: tự ý xuất tinh trong không xin phép
 - source_term: ゴム
   target_term: bao cao su
   context_hint: KHÔNG dịch "cao su"
@@ -82,13 +82,13 @@
   target_term: sữa mẹ
   context_hint: tình dục - mút sữa
 - source_term: セックス
-  target_term: quan hệ tình dục
-  context_hint: KHÔNG dịch "gần gũi" / "yêu" / "tình yêu"
+  target_term: làm tình
+  context_hint: KHÔNG dịch "quan hệ tình dục" cứng nhắc, KHÔNG dịch "gần gũi" / "yêu" / "tình yêu"
 - source_term: 肉体関係
-  target_term: quan hệ tình dục
-  context_hint: danh từ hóa, KHÔNG dịch "quan hệ thể xác"
+  target_term: quan hệ xác thịt
+  context_hint: danh từ hóa, quan hệ thể xác / làm tình
 - source_term: 子作り
-  target_term: quan hệ tình dục
+  target_term: làm tình để sinh con
   context_hint: chuyện sinh con, KHÔNG dịch "làm con" / "tạo con"
 - source_term: 孕む
   target_term: mang thai
@@ -106,23 +106,23 @@
   target_term: hiếp tập thể
   context_hint: cưỡng bức tập thể, KHÔNG giảm nhẹ
 - source_term: フェラ
-  target_term: hút dương vật
-  context_hint: quan hệ bằng miệng, từ khiêu dâm
+  target_term: bú cu
+  context_hint: quan hệ bằng miệng, từ khiêu dâm, KHÔNG dịch y khoa "hút dương vật"
 - source_term: フェラチオ
-  target_term: hút dương vật
-  context_hint: quan hệ bằng miệng
+  target_term: bú cu
+  context_hint: quan hệ bằng miệng, KHÔNG dịch y khoa "hút dương vật"
 - source_term: クンニ
-  target_term: liếm âm đạo
-  context_hint: quan hệ bằng miệng cho nữ
+  target_term: liếm bướm
+  context_hint: quan hệ bằng miệng cho nữ, KHÔNG dịch "liếm âm đạo"
 - source_term: パイズリ
-  target_term: kẹp dương vật bằng ngực
-  context_hint: hành động tình dục bằng ngực
+  target_term: kẹp ngực
+  context_hint: hành động tình dục bằng ngực, KHÔNG dịch "kẹp dương vật bằng ngực"
 - source_term: 手コキ
-  target_term: kích thích dương vật bằng tay
-  context_hint: hành động tình dục bằng tay
+  target_term: sóc lọ
+  context_hint: hành động tình dục bằng tay, KHÔNG dịch "kích thích dương vật bằng tay"
 - source_term: オナニー
-  target_term: thủ dâm
-  context_hint: KHÔNG dịch "tự sướng"
+  target_term: tự sướng
+  context_hint: tự sướng / thủ dâm, KHÔNG dịch né tránh
 - source_term: 気持ちいい
   target_term: sướng quá
   context_hint: KHÔNG dịch "dễ chịu" / "thoải mái" / "cảm giác tốt"
@@ -226,8 +226,8 @@
   target_term: ướt
   context_hint: cơ thể
 - source_term: 潮
-  target_term: dịch âm đạo
-  context_hint: nước tiết dịch âm đạo khi lên đỉnh
+  target_term: nước dâm
+  context_hint: nước tiết ra khi lên đỉnh, KHÔNG dịch y khoa "dịch âm đạo"
 - source_term: 咥える
   target_term: ngậm
   context_hint: ngậm bằng miệng, KHÔNG dịch "cắn"

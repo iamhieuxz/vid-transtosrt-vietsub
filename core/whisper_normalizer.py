@@ -99,13 +99,28 @@ _WHISPER_HOMOPHONE_FIXES = [
     # ROE-459: しんぼう bị Whisper tách thành 彼氏 陰謀 (đồng âm kareshi inbō) -> "bạn trai anh ấy"
     ('彼氏 陰謀', 'しんぼう'),
     ('彼氏陰謀', 'しんぼう'),
+    # Các fix riêng của từng phim (ADN-780, ...) KHÔNG nằm ở đây nữa —
+    # xem film_fixes_<PROJECT>.yaml + core/film_fixes.py (review 2026-11-01).
+]
+
+# Khôi phục âm tiết đầu câu bị Whisper VAD cắt cụt (Initial Mora Clipping Recovery)
+# Chỉ giữ các tiền tố GENERIC; entry gắn với nội dung 1 phim đã chuyển sang film_fixes_*.yaml.
+_INITIAL_MORA_CLIP_FIXES = [
+    (re.compile(r'^\s*しぶりに'), '久しぶりに'),
+    (re.compile(r'^\s*きい声'), '大きい声'),
+    (re.compile(r'^\s*持ちよくして'), '気持ちよくして'),
+    (re.compile(r'^\s*けてください'), '開けてください'),
+    (re.compile(r'^\s*じめまして'), 'はじめまして'),
+    (re.compile(r'^\s*まれた時のこと'), '産まれた時のこと'),
+    (re.compile(r'^\s*っち\s*確認しましょう'), 'こっち確認しましょう'),
 ]
 
 
-def _normalize_whisper_text(text: str) -> str:
+def _normalize_whisper_text(text: str, film_fixes: dict | None = None) -> str:
     """Chuẩn hóa 1 dòng text từ Whisper.
 
     - Sửa các từ đồng âm chữ Hán bị Whisper ghi nhầm (VD: 教授に仕上げ -> 今日中に仕上げ, 激無 -> 激務)
+    - Áp thêm film_fixes (homophone + mora_clip) riêng của phim nếu có
     - CHỈ thay kana->VI khi text ngắn (<=10 chars kana/romaji) — Whisper để sót nguyên
     - KHÔNG thay kana->VI giữa câu dài (sẽ gây JA + VI lẫn lộn)
     - Trim space thừa
@@ -113,9 +128,23 @@ def _normalize_whisper_text(text: str) -> str:
     if not text or not text.strip():
         return text
 
+    if film_fixes:
+        for clip_re, clip_rep in film_fixes.get('mora_clip') or []:
+            if clip_re.search(text):
+                text = clip_re.sub(clip_rep, text, count=1)
+
+    for clip_re, clip_rep in _INITIAL_MORA_CLIP_FIXES:
+        if clip_re.search(text):
+            text = clip_re.sub(clip_rep, text, count=1)
+
     for wrong_ja, right_ja in _WHISPER_HOMOPHONE_FIXES:
         if wrong_ja in text:
             text = text.replace(wrong_ja, right_ja)
+
+    if film_fixes:
+        for wrong_ja, right_ja in film_fixes.get('homophone') or []:
+            if wrong_ja in text:
+                text = text.replace(wrong_ja, right_ja)
 
     # Check: text có chứa kanji không? Nếu có → câu dài có cấu trúc, KHÔNG normalize
     # (chỉ những câu toàn hiragana/katakana ngắn Whisper mới để sót)
@@ -176,15 +205,17 @@ def normalize_srt_lines(text: str) -> str:
     return '\n'.join(out)
 
 
-def normalize_items(items: list) -> list:
+def normalize_items(items: list, film_fixes: dict | None = None) -> list:
     """Chuẩn hóa text trong list of dict items (từ parser).
 
     items: [{'index': 1, 'start': ..., 'end': ..., 'text': 'うん。'}, ...]
+    film_fixes: dict từ core.film_fixes.load_film_fixes(project_name) — tùy chọn,
+                chỉ áp fix riêng của phim (homophone/mora_clip), không ảnh hưởng phim khác.
     """
     fixed = 0
     for it in items:
         old = it.get('text', '')
-        new = _normalize_whisper_text(old)
+        new = _normalize_whisper_text(old, film_fixes=film_fixes)
         if new != old:
             it['text'] = new
             fixed += 1

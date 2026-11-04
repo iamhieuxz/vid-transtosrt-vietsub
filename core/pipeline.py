@@ -302,6 +302,9 @@ class TranslationPipeline:
         self.exporter = Exporter(self.db)
         self.validator = Validator()
         self.enable_glossary = config.get('pipeline', {}).get('enable_glossary', True)
+        # RuleProcessor chỉ có tác dụng khi config.yaml khai báo anti_artifacts/character_names.
+        # Thiếu cả hai -> processor là no-op, bỏ luôn 2 lần gọi + đọc/parse YAML mỗi window.
+        self._rules_enabled = bool(config.get('anti_artifacts') or config.get('character_names'))
         # false khi benchmark model: TM tra lai ban dich cu nen che khuat model moi
         self.use_tm = config.get('pipeline', {}).get('use_translation_memory', True)
         self.glossary_terms = self._load_glossary_terms(config)
@@ -556,10 +559,15 @@ class TranslationPipeline:
         if self._is_japanese_source:
             try:
                 from .post_processor import RuleBasedPostProcessor
-                processor = RuleBasedPostProcessor()
+                from .film_fixes import load_film_fixes
+                processor = RuleBasedPostProcessor(mode=getattr(self, 'mode', 'default'))
                 # Inject character_names để fix mistaken aliases (vd: Kasumi -> Kana)
                 processor.set_character_names(self.config.get('character_names', []))
                 processor.set_glossary_terms(self.glossary_terms)
+                # Fix riêng của phim (film_fixes_<PROJECT>.yaml) — không lẫn sang phim khác
+                processor.set_film_fixes(
+                    load_film_fixes(self.config.get('project', {}).get('name', ''))
+                )
                 post_stats = processor.process_project(
                     self.db, project_id,
                     progress_callback=lambda done, total: None,
@@ -915,7 +923,11 @@ class TranslationPipeline:
         if self._is_japanese_source:
             try:
                 from .whisper_normalizer import normalize_items
-                items = normalize_items(items)
+                from .film_fixes import load_film_fixes
+                items = normalize_items(
+                    items,
+                    film_fixes=load_film_fixes(self.config.get('project', {}).get('name', '')),
+                )
             except Exception as e:
                 logger.warning(f"WhisperNormalizer failed (non-blocking): {e}")
 
@@ -1181,21 +1193,23 @@ class TranslationPipeline:
                         if trans and trans.strip():
                             translations[idx] = trans
 
+            # ÁP DỤNG RULE PROCESSOR trước khi validate để các lỗi tên nhân vật / artifact
+            # có thể sửa bằng quy tắc được khắc phục ngay, tránh fail validation oan.
+            if getattr(self, '_rules_enabled', False):
+                try:
+                    from .rules import get_rule_processor
+                    processor = get_rule_processor('config.yaml')
+                    translations, violations = processor.process_window(translations)
+                    if violations:
+                        err_violations = [v for v in violations if v['severity'] == 'error']
+                        if err_violations:
+                            logger.info(f"Window {win_idx}: RuleProcessor fixed {len(violations)} issues ({len(err_violations)} errors)")
+                except Exception as e:
+                    logger.warning(f"RuleProcessor failed (non-blocking): {e}")
+
             is_valid = self.validator.validate_window_content(source_lines, translations)
             if is_valid:
                 try:
-                    # ÁP DỤNG RULE PROCESSOR (character names + anti-artifacts)
-                    try:
-                        from .rules import get_rule_processor
-                        processor = get_rule_processor('config.yaml')
-                        translations, violations = processor.process_window(translations)
-                        if violations:
-                            err_violations = [v for v in violations if v['severity'] == 'error']
-                            if err_violations:
-                                logger.info(f"Window {win_idx}: RuleProcessor fixed {len(violations)} issues ({len(err_violations)} errors)")
-                    except Exception as e:
-                        logger.warning(f"RuleProcessor failed (non-blocking): {e}")
-
                     with self._context_lock:
                         self.db.commit_window(project_id, win_id, start_sub, end_sub, translations)
                         self._save_to_tm(project, source_lines, translations)
@@ -1215,15 +1229,16 @@ class TranslationPipeline:
                     return False
                 logger.warning(f"{STATUS_ICONS['warning']} Window {win_idx} failed validation twice, committing as-is")
                 try:
-                    # Van ap dung RuleProcessor truoc khi commit
-                    try:
-                        from .rules import get_rule_processor
-                        processor = get_rule_processor('config.yaml')
-                        translations, violations = processor.process_window(translations)
-                        if violations:
-                            logger.info(f"Window {win_idx}: RuleProcessor fixed {len(violations)} issues (after validation fail)")
-                    except Exception as e:
-                        logger.warning(f"RuleProcessor failed (non-blocking): {e}")
+                    # Van ap dung RuleProcessor truoc khi commit (chi khi co rule cau hinh)
+                    if getattr(self, '_rules_enabled', False):
+                        try:
+                            from .rules import get_rule_processor
+                            processor = get_rule_processor('config.yaml')
+                            translations, violations = processor.process_window(translations)
+                            if violations:
+                                logger.info(f"Window {win_idx}: RuleProcessor fixed {len(violations)} issues (after validation fail)")
+                        except Exception as e:
+                            logger.warning(f"RuleProcessor failed (non-blocking): {e}")
 
                     with self._context_lock:
                         self.db.commit_window(project_id, win_id, start_sub, end_sub, translations)
@@ -1577,19 +1592,26 @@ class TranslationPipeline:
             logger.debug(f"JA QA pass skipped: {e}")
             final = polished
 
-        # Validate
+        # Validate: chỉ hạ cấp về polished/rough nếu bản đó thực sự vượt qua validator
         if not self.validator.validate_window_content(source_lines, final):
-            logger.warning(
-                f"Window {task['window_index']}: JA validation failed, "
-                f"falling back to polished"
-            )
-            final = polished
-            if not self.validator.validate_window_content(source_lines, final):
+            if final is not polished and self.validator.validate_window_content(source_lines, polished):
                 logger.warning(
-                    f"Window {task['window_index']}: JA polished also failed, "
-                    f"falling back to rough"
+                    f"Window {task['window_index']}: JA QA pass introduced validation error, "
+                    f"falling back to polished"
+                )
+                final = polished
+            elif self.validator.validate_window_content(source_lines, rough):
+                logger.warning(
+                    f"Window {task['window_index']}: JA polished failed validation, "
+                    f"falling back to valid rough"
                 )
                 final = rough
+            else:
+                logger.warning(
+                    f"Window {task['window_index']}: validation failed across passes, "
+                    f"keeping polished instead of downgrading to rough"
+                )
+                final = polished
 
         # Guard: 2 dong NGUON khac nhau nhung BAN DICH gan nhu trung nhau
         # => dau hieu model bo roi noi dung cua 1 dong (da gap: JUR-624 dong 233/234,
@@ -1611,18 +1633,70 @@ class TranslationPipeline:
                     if ch_a != ch_b:
                         break
                     prefix += 1
-                if ratio >= 0.88 and prefix >= 12:
+                # Ngưỡng tối ưu 0.78 + tiền tố >= 10 (hoặc ratio >= 0.85):
+                # Bắt gọn các trường hợp LLM lặp lại cùng một ý nhưng đổi vài chữ ở đuôi
+                # (đo được ở NSFS-301 cue 105/106: ratio=0.816, tiền tố=24 ký tự).
+                is_dup = (ratio >= 0.85) or (ratio >= 0.78 and prefix >= 10)
+                if is_dup:
                     logger.warning(
                         f"Window {task['window_index']}: DUP_TRANSLATION "
-                        f"line {k}->{k+1} (ratio={ratio:.2f}) - co the da mat noi dung: "
+                        f"line {k}->{k+1} (ratio={ratio:.2f}, prefix={prefix}) - co the da mat noi dung: "
                         f"{b_txt[:60]!r}")
-        except Exception:
-            pass
+                    # Auto-heal: nếu rough[k] có nội dung hợp lệ và KHÔNG trùng lặp với final[k-1],
+                    # thì khôi phục lại rough[k] để không bị mất nội dung câu!
+                    from .ja_qa_checker import JaQAChecker
+                    healed = False
+                    if rough and k < len(rough):
+                        r_k = (rough[k] or '').strip()
+                        if r_k and len(r_k) >= 2 and not JaQAChecker.has_cjk_leak(r_k):
+                            if SequenceMatcher(None, a_txt, r_k).ratio() < 0.75:
+                                logger.info(
+                                    f"Window {task['window_index']}: auto-healed DUP_TRANSLATION line {k+1} "
+                                    f"using rough: {r_k[:60]!r}"
+                                )
+                                final[k] = r_k
+                                healed = True
+                    if not healed and getattr(self, 'translator', None):
+                        try:
+                            re_prompt = (
+                                f"Translate this Japanese subtitle line into natural Vietnamese "
+                                f"(output ONLY the Vietnamese translation, no explanation):\n"
+                                f"{source_lines[k]}\nVietnamese:"
+                            )
+                            re_raw = self.translator.generate(re_prompt, temperature=0.05, num_predict=120)
+                            re_cand = (re_raw or '').strip().split('\n')[-1].strip(' "\'')
+                            re_cand = re.sub(r'^(Vietnamese|Bản dịch|Tiếng Việt)\s*:\s*', '', re_cand, flags=re.IGNORECASE).strip()
+                            if (re_cand and len(re_cand) >= 2
+                                and SequenceMatcher(None, a_txt, re_cand).ratio() < 0.75
+                                and not JaQAChecker.has_cjk_leak(re_cand)):
+                                logger.info(
+                                    f"Window {task['window_index']}: retranslated duplicate line {k+1}: {re_cand[:60]!r}"
+                                )
+                                final[k] = re_cand
+                        except Exception as err:
+                            logger.debug(f"Retranslate duplicate line failed: {err}")
+        except (IndexError, KeyError, TypeError, ValueError) as e:
+            # Audit R-1: DUP_TRANSLATION là cảnh báo mất nội dung — nếu chính nó
+            # lỗi thì phải thấy, không được nuốt.
+            logger.debug(
+                f"Window {task['window_index']}: dup-check skipped "
+                f"({type(e).__name__}: {e})"
+            )
 
+        # Audit A-4: trước đây chỉ log 'context=yes/no' gộp 3 nguồn độc lập, khiến
+        # không thể biết block ngữ nghĩa (Worker A) có mặt hay không — đã gây chẩn đoán sai.
+        # Tách riêng từng nguồn để đo được hiệu quả của ja_context.enabled.
+        _sem_keys = ("speakers", "pronouns_map", "setting", "summary", "film_profile")
+        _ctx_sem = bool(context_summary) and any(
+            context_summary.get(k) for k in _sem_keys
+        )
+        _n_flags = sum(1 for x in (qa or []) if not x.get("ok"))
         logger.info(
             f"Window {task['window_index']}: JA 3-pass OK "
-            f"({len(final)} lines, qa_issues={sum(1 for x in (qa or []) if not x.get('ok'))}, "
-            f"context={'yes' if context_summary else 'no'})"
+            f"({len(final)} lines, qa_issues={_n_flags}, "
+            f"ctx_hist={'y' if history_text else 'n'}, "
+            f"ctx_tm={'y' if tm_examples else 'n'}, "
+            f"ctx_sem={'y' if _ctx_sem else 'n'})"
         )
         return final, source_lines
 
@@ -2188,8 +2262,13 @@ class TranslationPipeline:
                             context_summary=ctx_summary,
                         )
                         polished = self.ja_translator.apply_qa_results(polished, qa)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        # Audit R-1: không nuốt im lặng — mất QA ở nhánh recovery
+                        # là mất cơ hội sửa cuối cùng, cần thấy trong log.
+                        logger.warning(
+                            f"Recovery[{dw['window_index']}]: QA pass failed, "
+                            f"keeping polished text: {type(e).__name__}: {e}"
+                        )
                 else:
                     raw_trans = self.translator.raw_translate(source_lines, src_lang, tgt_lang, glossary_terms=glossary)
                     if raw_trans is None or len(raw_trans) != len(source_lines):

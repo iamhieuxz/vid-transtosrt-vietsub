@@ -75,7 +75,37 @@ _SOURCE_CONDITIONED_FIXES = [
     (re.compile(r'^(?!.*(セフレ|セックスフレンド|愛人)).*友達'), re.compile(r'\bbạn tình\b', re.IGNORECASE), 'bạn bè'),
     # ROE-459: 茄子 (cà tím) bị dịch nhầm thành "bí ngô"
     (re.compile(r'(茄子|なす|ナス)'), re.compile(r'\bbí ngô\b', re.IGNORECASE), 'cà tím'),
+    # Các fix riêng của từng bộ phim (ADN-780, ...) KHÔNG nằm ở đây nữa —
+    # xem film_fixes_<PROJECT>.yaml + core/film_fixes.py (review 2026-11-01).
 ]
+
+# Tấm lưới bảo hiểm Uncen Mức 2 (chỉ chạy khi mode == 'uncen'):
+# Đảm bảo 100% phụ đề JAV dùng khẩu ngữ người lớn tự nhiên, triệt tiêu từ ngữ y khoa khô cứng
+_UNCEN_LEVEL2_SOURCE_RULES = [
+    (re.compile(r'(ちんぽ|ちんこ|おちんちん|肉棒)'), re.compile(r'\b(dương vật|cậu nhỏ)\b', re.IGNORECASE), 'con cặc'),
+    (re.compile(r'(まんこ|おまんこ|膣)'), re.compile(r'\b(âm đạo|cô bé)\b', re.IGNORECASE), 'bướm'),
+    (re.compile(r'セックス'), re.compile(r'\bquan hệ tình dục\b', re.IGNORECASE), 'làm tình'),
+    (re.compile(r'(中出し|仲出し)'), re.compile(r'\bxuất tinh trong\b', re.IGNORECASE), 'bắn vào trong'),
+    (re.compile(r'(フェラ|フェラチオ)'), re.compile(r'\b(hút dương vật|ngậm dương vật)\b', re.IGNORECASE), 'bú cu'),
+    (re.compile(r'射精'), re.compile(r'\bphóng thích\b', re.IGNORECASE), 'bắn tinh'),
+    (re.compile(r'潮'), re.compile(r'\bdịch âm đạo\b', re.IGNORECASE), 'nước dâm'),
+    (re.compile(r'手コキ'), re.compile(r'\bkích thích dương vật bằng tay\b', re.IGNORECASE), 'sóc lọ'),
+    (re.compile(r'パイズリ'), re.compile(r'\bkẹp dương vật bằng ngực\b', re.IGNORECASE), 'kẹp ngực'),
+    (re.compile(r'クンニ'), re.compile(r'\bliếm âm đạo\b', re.IGNORECASE), 'liếm bướm'),
+]
+
+# Neo giới tính sinh học cho từ vựng giải phẫu NỮ rõ ràng.
+# Cố ý KHÔNG gồm "ngực/vú" (nam cũng có ngực — "ngực anh" hợp lệ) và "bướm"
+# (con bướm) để tránh sửa oan câu tiếng Việt đúng (review 2026-11-01).
+_FEMALE_ANATOMY_WRONG_MALE_RE = re.compile(
+    r'\b(âm đạo|lồn|tử cung)\s+(của\s+)?anh\b',
+    re.IGNORECASE,
+)
+_LEADING_NUM_LEAK_RE = re.compile(r'^(?:\d{1,3}\s*[\.\)]\s+|\d{1,3}、\s*)+')
+_LEADING_ORPHAN_COMMA_RE = re.compile(r'^[,;:\s]+')
+_ADULT_FAMILY_NO_TO_RE = re.compile(
+    r'(お母さん|母さん|おかあさん|娘|旦那|主人|奥さん|愚痴|悩み|満足させてあげる|まんこ|ちんぽ|おっぱい)'
+)
 
 
 # -----------------------------------------------------------------------------
@@ -363,14 +393,25 @@ def _preserve_case_replace(match_text: str, replacement: str) -> str:
 class RuleBasedPostProcessor:
     """Post-process translated subtitles using rules (no LLM calls)."""
 
-    def __init__(self, enabled: bool = True):
+    def __init__(self, enabled: bool = True, mode: str = "default"):
         self.enabled = enabled
+        self.mode = (mode or "").lower()
         self._stats = {
             'total': 0,
             'changed': 0,
         }
         self.character_names = []
         self._glossary_forbidden_rules = []
+        # Fix riêng theo phim (film_fixes_<PROJECT>.yaml): [(source_re, wrong_re, replacement)]
+        self._film_source_conditioned = []
+
+    def set_mode(self, mode: str):
+        """Thiết lập mode dịch ('default' / 'uncen')."""
+        self.mode = (mode or "").lower()
+
+    def set_film_fixes(self, fixes: dict):
+        """Inject bộ fix riêng của phim (load từ film_fixes_<PROJECT>.yaml)."""
+        self._film_source_conditioned = list((fixes or {}).get('source_conditioned') or [])
 
     def set_character_names(self, character_names: list):
         """Inject character_names từ config để fix mistaken aliases."""
@@ -413,8 +454,14 @@ class RuleBasedPostProcessor:
         self._stats['total'] += 1
         original = text
 
-        # 1. Fix whitespace
+        # 1. Fix whitespace & strip leaked leading numbers ("1. ", "2. 2. ") / orphan commas (", để em...")
         text = _fix_whitespace(text)
+        if not (source_text and re.match(r'^\s*\d+', source_text)):
+            text = _LEADING_NUM_LEAK_RE.sub('', text).strip()
+        if _LEADING_ORPHAN_COMMA_RE.match(text):
+            text = _LEADING_ORPHAN_COMMA_RE.sub('', text).strip()
+            if text and text[0].islower():
+                text = text[0].upper() + text[1:]
 
         # 2. Fix Sino-VN literal calques
         def _replace_sino(m):
@@ -426,14 +473,48 @@ class RuleBasedPostProcessor:
         if source_text:
             for ja_re, vi_re, rep in _SOURCE_CONDITIONED_FIXES:
                 if ja_re.search(source_text):
-                    text = vi_re.sub(lambda m, r=rep: _preserve_case_replace(m.group(0), r), text)
+                    text = vi_re.sub(
+                        lambda m, r=rep: _preserve_case_replace(m.group(0), r) if (m.start() == 0 or r[0].isupper()) else r,
+                        text,
+                    )
+            # Fix riêng của bộ phim đang dịch (không áp sang phim khác)
+            for ja_re, vi_re, rep in self._film_source_conditioned:
+                if ja_re.search(source_text):
+                    text = vi_re.sub(
+                        lambda m, r=rep: _preserve_case_replace(m.group(0), r) if (m.start() == 0 or r[0].isupper()) else r,
+                        text,
+                    )
             for src_term, vi_forbid_re, tgt_term in self._glossary_forbidden_rules:
                 if src_term in source_text:
                     text = vi_forbid_re.sub(lambda m, r=tgt_term: _preserve_case_replace(m.group(0), r), text)
+            if _ADULT_FAMILY_NO_TO_RE.search(source_text):
+                text = re.sub(
+                    r'\btớ\b',
+                    lambda m: 'Tôi' if m.group(0)[0].isupper() else 'tôi',
+                    text,
+                    flags=re.IGNORECASE,
+                )
+
+        # 2b-gender. Neo giới tính sinh học: chặn tuyệt đối "âm đạo của anh" / "ngực anh"
+        if _FEMALE_ANATOMY_WRONG_MALE_RE.search(text):
+            target_pronoun = 'mẹ' if (source_text and re.search(r'(お母さん|母さん|おかあさん)', source_text)) else 'cô'
+            text = _FEMALE_ANATOMY_WRONG_MALE_RE.sub(
+                lambda m: f"{m.group(1)} {m.group(2) or 'của '}{target_pronoun}",
+                text,
+            )
 
         # 2c. Nguồn không có chữ Nhật (Whisper để sót "Cảm ơn") mà model tự thêm "anh/chị" → gỡ
         if source_text and not _CJK_RE.search(source_text):
             text = re.sub(r'\s+anh/chị\b', '', text, flags=re.IGNORECASE)
+
+        # 2d. Tấm lưới bảo hiểm Uncen Mức 2 (chỉ chạy khi mode == 'uncen' và có source_text)
+        if self.mode == 'uncen' and source_text:
+            for ja_re, vi_re, rep in _UNCEN_LEVEL2_SOURCE_RULES:
+                if ja_re.search(source_text):
+                    text = vi_re.sub(
+                        lambda m, r=rep: _preserve_case_replace(m.group(0), r) if (m.start() == 0 or r[0].isupper()) else r,
+                        text,
+                    )
 
         # 3. Fix Romaji leak
         def _replace_romaji(m):

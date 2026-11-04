@@ -64,3 +64,11 @@ models/
 # Backup snapshots from refactor
 .backups/
 .code_review_log.md
+
+# Video media & local e2e test runs
+*.mp4
+*.mkv
+*.avi
+*.mov
+e2e-*/
+_ctx_run/

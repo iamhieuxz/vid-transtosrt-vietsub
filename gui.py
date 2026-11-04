@@ -2588,7 +2588,8 @@ class App(QMainWindow):
         try:
             from core.post_processor import RuleBasedPostProcessor
             proj_name = (self.config.get("project", {}) or {}).get("name", "")
-            processor = RuleBasedPostProcessor()
+            mode = (self.config.get("translation", {}) or {}).get("mode", "uncen")
+            processor = RuleBasedPostProcessor(mode=mode)
             processor.set_character_names(self.config.get("character_names", []))
             processor.set_glossary_terms(load_glossary_files(proj_name))
             with open(input_srt, "r", encoding="utf-8") as f:

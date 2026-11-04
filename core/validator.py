@@ -4,7 +4,51 @@ from typing import List, Dict, Set
 
 logger = logging.getLogger(__name__)
 
+# Audit R-2: đặt tên cho các ngưỡng thay vì magic number rải trong code.
+# Phụ đề hiển thị tối đa 2 dòng x ~42 ký tự; 150 là giới hạn cứng để chặn
+# trường hợp LLM trả về cả đoạn văn.
+MAX_SUBTITLE_CHARS = 150
+MAX_TRANSLATION_RATIO = 8.0
+
+# Ranh giới câu/vế để cắt an toàn (không chặt giữa từ)
+_CLAUSE_BOUNDARY_RE = re.compile(r'[.!?…;:,。！？、]+')
+
+
+def _truncate_at_boundary(text: str, limit: int) -> str:
+    """Cắt `text` về <= `limit` ký tự tại ranh giới câu/vế gần nhất.
+
+    Ưu tiên: dấu câu -> khoảng trắng -> cắt cứng.
+    Tránh trường hợp `text[:150]` chặt đôi một từ và làm câu cụt nghĩa.
+    """
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    # 1. Ranh giới câu/vế muộn nhất, nhưng phải giữ được ít nhất nửa giới hạn
+    #    (cắt ở dấu chấm quá sớm thì mất gần hết nội dung).
+    min_keep = limit * 0.5
+    last = None
+    for m in _CLAUSE_BOUNDARY_RE.finditer(head):
+        if m.end() >= min_keep:
+            last = m.end()
+    if last:
+        return head[:last].rstrip()
+    # 2. Khoảng trắng muộn nhất
+    sp = head.rfind(" ")
+    if sp >= min_keep:
+        return head[:sp].rstrip()
+    # 3. Cắt cứng (không có ranh giới nào đủ muộn)
+    return head.rstrip()
+
+
 class Validator:
+    _VI_COMMON_WORDS_LOWER = frozenset({
+        'anh', 'em', 'con', 'co', 'cô', 'me', 'mẹ', 'ba', 'bà', 'bo', 'bố',
+        'an', 'ăn', 'ai', 'mi', 'mì', 'my', 'ta', 'to', 'tớ', 'ca', 'cả',
+        'la', 'là', 'ma', 'mà', 'na', 'sa', 'ha', 'da', 'ra', 'va', 'và',
+        'oi', 'ơi', 'uh', 'ư', 'ừ', 'a', 'á', 'ạ', 'o', 'ơ', 'ờ', 'u', 'ừm',
+        'nha', 'nhé', 'nhe', 'nhi', 'nhỉ', 'di', 'đi', 'do', 'đó', 'du', 'đủ',
+    })
+
     def validate_json_translation(self, json_data: List[Dict], expected_ids: List[int]) -> bool:
         """Validate JSON structure and ID ORDER."""
         if not isinstance(json_data, list):
@@ -47,9 +91,15 @@ class Validator:
                 return False
 
             # Truncate dòng quá dài (subtitles có giới hạn ~42 chars mỗi dòng)
-            if len(orig) > 0 and len(trans) / len(orig) > 8:
-                logger.warning(f"Translation too long, truncating: {trans[:80]}...")
-                translations[i] = trans[:150]  # hard cap 150 chars
+            if len(orig) > 0 and len(trans) / len(orig) > MAX_TRANSLATION_RATIO:
+                # P3: cắt tại ranh giới câu/từ, KHÔNG cắt giữa từ.
+                # `trans[:150]` thô có thể chặt đôi một từ và làm câu cụt nghĩa.
+                cut = _truncate_at_boundary(trans, MAX_SUBTITLE_CHARS)
+                logger.warning(
+                    f"Translation too long ({len(trans)} chars), truncated to "
+                    f"{len(cut)} at boundary: {cut[-40:]!r}"
+                )
+                translations[i] = cut
 
             # Cảnh báo chính tả tiếng Việt (không reject, chỉ warn)
             if trans:
@@ -115,35 +165,62 @@ class Validator:
         except Exception:
             pass
 
+    def _normalize_mistaken_character_names(self, translations: List[str]) -> None:
+        """Tự động sửa các mistaken_aliases (nghe/phiên âm lệch) về tên canonical
+        theo ranh giới từ (\\b) ngay trên bản dịch trước khi kiểm tra tính nhất quán.
+        """
+        if not getattr(self, 'character_names', None):
+            return
+        for entry in self.character_names:
+            if not isinstance(entry, dict):
+                continue
+            canonical = (entry.get('canonical') or '').strip()
+            if not canonical or len(canonical) < 3:
+                continue
+            mistaken = entry.get('mistaken_aliases') or []
+            for alias in mistaken:
+                if not alias or not isinstance(alias, str):
+                    continue
+                alias_clean = alias.strip()
+                if len(alias_clean) < 4:
+                    continue
+                if alias_clean.lower() == canonical.lower():
+                    continue
+                if alias_clean.lower() in self._VI_COMMON_WORDS_LOWER:
+                    continue
+                if not re.match(r'^[A-Za-z\-]+$', alias_clean):
+                    continue
+                pattern = re.compile(rf'\b{re.escape(alias_clean)}\b', re.IGNORECASE)
+                for idx, trans in enumerate(translations):
+                    if trans and pattern.search(trans):
+                        translations[idx] = pattern.sub(canonical, trans)
+
     def _check_character_name_consistency(self, translations: List[str]) -> bool:
-        """Kiểm tra tên nhân vật có nhất quán không.
+        """Kiểm tra tên nhân vật có nhất quán không (dùng ranh giới từ \\b).
 
         Nếu có nhiều cách viết khác nhau của cùng tên (vd: Ayunee + Ayune) → reject.
 
         P1-3 fix: build name_variants from self.character_names (config-driven) instead
         of hardcoding Ayunee/Ayune/Ayumi. Falls back to hardcoded defaults if config empty.
         """
+        self._normalize_mistaken_character_names(translations)
+
         # shortcut: config-driven name variants
         name_variants = self._build_name_variants()
         if not name_variants:
             return True  # no character names configured — nothing to check
 
-        found = {}
-        # group: map each alias to its canonical, so we can detect when same character
-        # appears under different spellings (e.g., 'ayunee' and 'ayune' both -> 'Ayunee')
-        alias_to_canonical = {}
+        variant_patterns = {}
         for canonical, variants in name_variants.items():
+            compiled_list = []
             for v in variants:
-                alias_to_canonical[v] = canonical
-
-        for trans in translations:
-            if not trans:
-                continue
-            t_lower = trans.lower()
-            for alias, canonical in alias_to_canonical.items():
-                if alias in t_lower:
-                    found.setdefault(canonical, 0)
-                    found[canonical] += 1
+                if len(v) < 3 or v in self._VI_COMMON_WORDS_LOWER:
+                    continue
+                if not re.match(r'^[a-z\-]+$', v):
+                    continue
+                compiled_list.append((v, re.compile(rf'\b{re.escape(v)}\b', re.IGNORECASE)))
+            if compiled_list:
+                variant_patterns[canonical] = compiled_list
 
         # Nếu cùng 1 canonical có nhiều cách viết khác nhau (alias khác nhau) → reject
         # (ví dụ: cùng là 'Ayunee' nhưng 1 dòng 'Ayunee', 1 dòng 'Ayuune' cùng xuất hiện)
@@ -151,10 +228,9 @@ class Validator:
         for trans in translations:
             if not trans:
                 continue
-            t_lower = trans.lower()
-            for canonical, variants in name_variants.items():
-                for v in variants:
-                    if v in t_lower:
+            for canonical, compiled_list in variant_patterns.items():
+                for v, pat in compiled_list:
+                    if pat.search(trans):
                         canonical_to_aliases_hit.setdefault(canonical, set()).add(v)
         for canonical, aliases in canonical_to_aliases_hit.items():
             if len(aliases) > 1:
@@ -185,17 +261,23 @@ class Validator:
             canonical = entry.get('canonical', '').strip()
             if not canonical:
                 continue
+            canon_low = canonical.lower()
             variants = set()
-            # primary aliases
+            # primary aliases (Latin only, >= 3 chars)
             for a in entry.get('aliases', []) or []:
                 if a and a.strip():
-                    variants.add(a.strip().lower())
-            # mistaken aliases (Whisper mishearings) — also must be unified
+                    al = a.strip().lower()
+                    if len(al) >= 3 and re.match(r'^[a-z\-]+$', al):
+                        variants.add(al)
+            # mistaken aliases (Whisper mishearings) — Latin only, >= 4 chars
             for a in entry.get('mistaken_aliases', []) or []:
                 if a and a.strip():
-                    variants.add(a.strip().lower())
+                    al = a.strip().lower()
+                    if len(al) >= 4 and re.match(r'^[a-z\-]+$', al):
+                        variants.add(al)
             # canonical itself is also a valid alias (so we detect it as a hit)
-            variants.add(canonical.lower())
+            if len(canon_low) >= 3 and re.match(r'^[a-z\-]+$', canon_low):
+                variants.add(canon_low)
             if variants:
                 result[canonical] = sorted(variants)
         return result

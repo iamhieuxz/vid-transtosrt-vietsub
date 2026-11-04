@@ -3,29 +3,27 @@ whisper:
   device: cuda
   compute_type: int8
   language: ja
-  beam_size: 8
+  beam_size: 5
   vad_filter: true
-  vad_threshold: 0.4
-  min_silence_duration_ms: 700
-  speech_pad_ms: 500
+  vad_threshold: 0.35
+  min_silence_duration_ms: 600
+  speech_pad_ms: 550
   audio_filter: highpass=f=80
   audio_volume: 1.0
-  prompt_names:
-  - マサト
-  - メイ
+  prompt_names: []
   max_speech_duration_s: 15
   no_speech_threshold: 0.6
   log_prob_threshold: -1.0
   compression_ratio_threshold: 2.4
   condition_on_previous_text: false
 project:
-  name: JUR-629
+  name: PPPD-795
   source_lang: Tiếng Nhật (Japanese)
   target_lang: Tiếng Việt (Vietnamese)
-  input_srt: E:\HIDE\JAV\JUR-629\JUR-629.mp4
-  output_srt: E:\HIDE\JAV\JUR-629
+  input_srt: E:/HIDE/JAV/PPPD-795.mp4
+  output_srt: E:\HIDE\JAV
 window:
-  size: 12
+  size: 6
   history: 12
   future: 4
 llama_server:
@@ -60,7 +58,7 @@ translation:
   chunk_size: 3
 models:
   llama:
-    name: qwen35-9b-iq4
+    name: qwen35-9b-mtp
     ollama_url: http://localhost:8180/v1/chat/completions
     temperature: 0.05
     repeat_penalty: 1.0
@@ -116,8 +114,8 @@ model:
   num_predict: 768
   timeout: 300
 ja_context:
-  enabled: false
-  window_size: 12
+  enabled: true
+  window_size: 20
   scene_review_size: 36
   worker_c_enabled: false
 ja_trans2:
@@ -125,8 +123,8 @@ ja_trans2:
   batch_size: 5
 character_names: []
 recent_projects:
-- E:/HIDE/JAV/JUR-624.mp4
-- E:/HIDE/JAV/JUR-629.mp4
-- E:/HIDE/JAV/ADN-627.mp4
-- E:/HIDE/JAV/JUR-708.mp4
-- E:/HIDE/JAV/NSFS-373.mp4
+- E:/HIDE/JAV/PPPD-795.mp4
+- E:/HIDE/JAV/NSFS-521.mp4
+- E:/HIDE/JAV/NSFS-301.mp4
+- E:/HIDE/JAV/JUL-462.mp4
+- E:/HIDE/JAV/JUL-308.mp4

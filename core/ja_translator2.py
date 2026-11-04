@@ -63,11 +63,18 @@ Lines:
 # Helpers
 # -----------------------------------------------------------------------------
 
-_LEADING_NUM_RE = re.compile(r"^\s*\d+[\.\)]\s*")
+# Chỉ strip "1. " / "2) " / "1、" — KHÔNG strip '3:00', '20-30', '2.5' (bug review 2026-11-01)
+_LEADING_NUM_RE = re.compile(r"^(?:\d{1,3}\s*[\.\)]\s+|\d{1,3}、\s*)+")
+_LEADING_ORPHAN_PUNCT_RE = re.compile(r"^[,;:\s]+")
 
 
 def _strip_leading_number(line: str) -> str:
-    return _LEADING_NUM_RE.sub("", line).strip()
+    res = _LEADING_NUM_RE.sub("", line or "").strip()
+    if _LEADING_ORPHAN_PUNCT_RE.match(res):
+        res = _LEADING_ORPHAN_PUNCT_RE.sub("", res).strip()
+        if res and res[0].islower():
+            res = res[0].upper() + res[1:]
+    return res
 
 
 def _build_pairs(source_lines: List[str], trans_lines: List[str]) -> str:

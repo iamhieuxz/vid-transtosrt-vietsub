@@ -50,6 +50,30 @@ from faster_whisper import WhisperModel
 
 logger = logging.getLogger(__name__)
 
+# --- P1 (audit NSFS-504): chống hallucination của Whisper trên khoảng không thoại ---
+# Đo thực tế: khi hạ ngưỡng VAD / tăng gain, Whisper sinh đúng những câu dưới đây ở
+# đoạn chỉ có nhạc hoặc tiếng thở. Đây là artefact của dữ liệu train (phụ đề), không
+# phải lời thoại. VAD 0.35 hiện tại đã chặn tốt; guard này để không rác lọt nếu cấu
+# hình thay đổi hoặc VAD bỏ sót.
+# (a) Boilerplate — KHÔNG BAO GIỜ là thoại trong phim, lọc bất kể thời lượng.
+_WHISPER_BOILERPLATE_RE = re.compile(
+    r'(ご視聴(いただき)?ありがとうございました|'
+    r'最後までご視聴|ご覧いただきありがとうございました|'
+    r'チャンネル登録|高評価|'
+    r'字幕(提供|制作|は|を)?|'
+    r'動画を?ご視聴|'
+    r'Thank you for watching|Subtitles by)',
+    re.IGNORECASE,
+)
+# (b) Câu CÓ THỂ là thoại thật -> chỉ coi là hallucination khi thời lượng vô lý
+#     so với độ dài chữ (vd 15 giây chỉ để nói "おやすみなさい").
+_WHISPER_AMBIGUOUS = frozenset({
+    'おやすみなさい', 'おやすみ', 'お疲れ様でした', 'お疲れさまでした',
+    'お疲れ様です', 'ありがとうございました', 'はい', 'いいえ',
+})
+_HALLUCINATION_MIN_SECONDS = 6.0
+_HALLUCINATION_MAX_CHARS = 15
+
 
 class WhisperTranscriber:
     def __init__(self, config: dict):
@@ -60,8 +84,8 @@ class WhisperTranscriber:
         self.beam_size = config.get('beam_size', 5)
         self.vad_filter = config.get('vad_filter', True)
         self.vad_threshold = config.get('vad_threshold', 0.35)
-        self.min_silence_duration_ms = config.get('min_silence_duration_ms', 400)
-        self.speech_pad_ms = config.get('speech_pad_ms', 400)
+        self.min_silence_duration_ms = config.get('min_silence_duration_ms', 500)
+        self.speech_pad_ms = config.get('speech_pad_ms', 450)
         self.max_speech_duration_s = config.get('max_speech_duration_s', 15)
         self.no_speech_threshold = config.get('no_speech_threshold', 0.85)
         self.log_prob_threshold = config.get('log_prob_threshold', -1.35)
@@ -402,15 +426,15 @@ class WhisperTranscriber:
                     # gợi ý mạnh làm Whisper bịa từ đó ở đoạn im lặng/nhạc nền của phim thường.
                     adult = getattr(self, 'adult_boost', False)
                     default_hotwords = getattr(self, 'hotwords', None) or (
-                        "中出し 気持ちいい 気持ち良い イク イッちゃう おまんこ おちんちん ちんぽ "
-                        "射精 フェラ 舐めて 奥まで 濡れてる 感じてる 恥ずかしい 変態 "
-                        "彼氏 彼女 旦那 主人 奥さん 夫婦 セフレ 不倫 浮気 婚約 今日中に 激務"
+                        "中出し 気持ちいい 気持ち良い 気持ちよく イク イッちゃう おまんこ まんこ おちんちん ちんぽ "
+                        "射精 フェラ 舐めて 奥まで 濡れてる 感じてる 恥ずかしい 変態 エッチ 性処理 内緒 鳴き声 発散 "
+                        "お母さん 娘 彼氏 彼女 旦那 主人 奥さん 夫婦 セフレ 不倫 浮気 婚約 就活 就活生 久しぶり 大きい声 玄関 今日中に 激務"
                         if adult else ""
                     )
                     default_prompt = getattr(self, 'initial_prompt', None) or (
-                        "気持ちいい、イク、イッちゃう、だめ、やめて、おまんこ、おちんちん、ちんぽ、"
+                        "気持ちいい、気持ちよく、イク、イッちゃう、だめ、やめて、おまんこ、まんこ、おちんちん、ちんぽ、"
                         "中出し、射精、フェラ、舐めて、奥まで、激しい、濡れてる、感じてる、恥ずかしい、"
-                        "変態、旦那、主人、奥さん、夫婦、不倫、浮気、今日中に、激務"
+                        "変態、エッチ、性処理、内緒、鳴き声、発散、お母さん、娘、旦那、主人、奥さん、夫婦、不倫、浮気、就活、就活生、久しぶり、大きい声、玄関"
                         if adult else ""
                     )
                     if self.prompt_names:
@@ -438,6 +462,18 @@ class WhisperTranscriber:
                     last_end = 0
                     for segment in segment_list:
                         offset = max(0.0, float(start_seconds or 0.0))
+                        # P1: segment kéo dài bất thường mà chữ rất ngắn = hallucination
+                        # trên khoảng lặng (vd 15s chỉ nói "おやすみなさい"). Bỏ trước khi
+                        # tách cue để không ghi rác vào SRT.
+                        if self._is_hallucination_segment(
+                                segment.text, segment.end - segment.start):
+                            logger.debug(
+                                f"[TRANSCRIBER] Dropped hallucination segment "
+                                f"({segment.end - segment.start:.1f}s): {segment.text.strip()[:50]!r}"
+                            )
+                            pbar.update(segment.end - last_end)
+                            last_end = segment.end
+                            continue
                         # Tách segment dài thành nhiều cue dựa trên word timestamps
                         # (fix cue 70s+ từ NSPS-692). shortcut: chỉ áp dụng nếu
                         # Whisper trả về word-level info; rỗng thì fallback 1 cue.
@@ -645,6 +681,25 @@ class WhisperTranscriber:
         millis = total_ms % 1000
         return f"{hrs:02d}:{mins:02d}:{secs:02d},{millis:03d}"
 
+    def _is_hallucination_segment(self, text: str, duration: float) -> bool:
+        """True nếu segment là hallucination của Whisper trên khoảng không thoại.
+
+        Chỉ áp dụng cho các câu MƠ HỒ (có thể là thoại thật như "おやすみなさい")
+        và chỉ khi thời lượng vô lý so với lượng chữ — 15 giây cho 7 ký tự.
+        Boilerplate phụ đề đã bị `_is_noise_segment` lọc bất kể thời lượng.
+        """
+        t = (text or '').strip()
+        if not t:
+            return False
+        if _WHISPER_BOILERPLATE_RE.search(t):
+            return True
+        if duration >= _HALLUCINATION_MIN_SECONDS and len(t) <= _HALLUCINATION_MAX_CHARS:
+            # Bỏ dấu câu/space khi so khớp để bắt "おやすみなさい。" và "お や す み"
+            norm = re.sub(r'[\s。、！？!?…]+', '', t)
+            if norm in _WHISPER_AMBIGUOUS:
+                return True
+        return False
+
     def _is_noise_segment(self, text: str) -> bool:
         """
         Kiem tra xem segment co phai la noise/rmusic/rác hay khong.
@@ -684,6 +739,12 @@ class WhisperTranscriber:
             '💓', '💔', '💕', '💖', '💗', '💘', '💙', '💚',
         }
         if text.lower() in noise_words:
+            return True
+
+        # 3b. Boilerplate phụ đề/YouTube — không bao giờ là thoại trong phim.
+        # Đo trên NSFS-504 (audit P1): Whisper sinh "ご視聴ありがとうございました"
+        # ở đoạn chỉ có nhạc khi hạ ngưỡng VAD.
+        if _WHISPER_BOILERPLATE_RE.search(text):
             return True
 
         # 4. Lap lai ky tu (thuong la loi nhan dien, vd: "eeeee" hoac "-----")

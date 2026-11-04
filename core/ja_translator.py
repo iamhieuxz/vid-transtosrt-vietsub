@@ -15,6 +15,7 @@ phù hợp cho tiếng Nhật) để gọi ``self.translator.generate(prompt, ..
 
 from __future__ import annotations
 
+import difflib
 import logging
 import re
 from typing import List, Optional
@@ -32,19 +33,22 @@ Phong cách tự nhiên, dễ hiểu, đúng giọng nhân vật.
 
 ĐẶC THÙ TIẾNG NHẬT (BẮT BUỘC NẮM):
 - 敬語 (keigo): phân biệt rõ 敬体 (です/ます) ↔ 常体 (だ/する) ↔ 謙譲語 ↔ 尊敬語.
-  Vai lịch sự → "anh/chị"; vai thân mật → "tớ/cậu/tao-mày". NHẤT QUÁN xuyên suốt phim.
-- Xưng hô PHẢI chọn ngôi cụ thể (anh, chị, em, bạn, tôi, mình...).
+  Vai lịch sự hoặc người trưởng thành → "tôi - anh/chị/em/cô". NHẤT QUÁN xuyên suốt phim.
+  TUYỆT ĐỐI KHÔNG tự ý dùng "tớ/cậu" cho người trưởng thành, phụ huynh (お母さん/母/娘), cấp trên/cấp dưới hoặc cảnh 18+.
+- Xưng hô PHẢI chọn ngôi cụ thể (anh, chị, em, cô, tôi, mình, mẹ, con...).
   TUYỆT ĐỐI KHÔNG dùng "Anh/chị" / "anh/chị" dạng gộp — đó là lỗi.
   + 先輩 (senpai) → "anh" (vai trên, nam)
   + 先輩 nữ + nạn nhân nữ → "chị"
-  + 君 (kimi) → "em" (vai dưới)
+  + 君 (kimi) → "em" / "cậu" (khi người lớn tuổi/mẹ bạn gái gọi bạn trai của con gái)
   + あなた (anata) → "anh" mặc định
-  + 不明確 (không rõ) → "anh" mặc định cho nam, "chị" cho nữ theo giọng tự xưng của nhân vật.
+  + 不明確 (không rõ) → "anh" mặc định cho nam, "chị"/"cô" cho nữ theo giọng tự xưng của nhân vật.
+  + お母さん/母さん/ママ → "mẹ" (khi con gọi mẹ) hoặc "cô/mẹ" (khi bạn trai của con gọi); người mẹ xưng "mẹ" với con, xưng "tôi/cô" với bạn trai của con (TUYỆT ĐỐI KHÔNG xưng "tớ").
+  + 娘 (musume) → "con gái" (VD: 娘を身ごもった = "tôi mang thai con gái", 一人で娘を育てた = "một mình nuôi con gái", 娘には笑っててほしい = "tôi muốn con gái mình luôn mỉm cười"; KHÔNG dịch 娘 thành "cô ấy").
   + 兄さん/お兄さん/お兄ちゃん → "anh" (KHÔNG "cậu"); 姉さん/お姉さん/お姉ちゃん → "chị";
     弟/妹 gọi bằng tên hoặc "em". 旦那/あなた (vợ gọi chồng) → "anh"; 奥さん → "chị"/"vợ" tùy người nói.
     お義母さん/お義父さん → "mẹ"/"bố" (hoặc "mẹ chồng"/"bố chồng" khi người nói là con dâu). Giữ nguyên cách xưng đã chọn.
-  + 俺/僕 (ore/boku) → "tôi" (giọng nam)
-  + あたし/私 (atashi/watashi) → "tôi" (giọng nữ)
+  + 俺/僕 (ore/boku) → "tôi" / "anh" / "em" (giọng nam, KHÔNG dịch "tớ" trong cảnh người lớn/18+)
+  + あたし/私 (atashi/watashi) → "tôi" / "em" / "mẹ" (giọng nữ, KHÔNG dịch "tớ" khi là mẹ/người trưởng thành)
   + 私 (watashi) trung tính → "tôi"
 - 終助詞 (sentence-final particles ね/よ/わ/ぞ/かな/さ): phải truyền tải cảm xúc sang tiếng Việt,
   không bỏ sót. VD: だろうね → "chắc là vậy nhỉ", よ → nhấn mạnh/khẳng định.
@@ -58,27 +62,47 @@ Phong cách tự nhiên, dễ hiểu, đúng giọng nhân vật.
 - Câu tin nhắn/chat lược (省略): thêm từ cho đủ nghĩa khi dịch sang tiếng Việt.
 - Tiếng Anh lẫn trong câu (カタカナ外来語, VD キャンセル, セットアップ): giữ nguyên nếu phổ biến ở VN
   hoặc dịch theo nghĩa khi cần tự nhiên hơn.
+- TẨY MÙI DỊCH MÁY (DE-TRANSLATIONESE — BẮT BUỘC ĐỂ CÂU THOẠI TỰ NHIÊN):
+  + Khử bị động gượng gạo: Tiếng Nhật rất chuộng thể bị động (〜られる, 〜てしまう, 〜ていただく).
+    Trong tiếng Việt giao tiếp hàng ngày, KHÔNG dịch thành "bị/được" cứng nhắc mà diễn đạt chủ động theo ý nhân vật:
+    * やられたかった → "muốn anh làm thô bạo / muốn anh làm mạnh tay" (KHÔNG dịch máy "muốn bị cưỡng ép").
+    * 言われても困る → "anh nói thế tôi biết làm sao" (KHÔNG dịch "dù bị nói thế cũng khó xử").
+    * 助けてもらった → "nhờ anh cứu giúp" (KHÔNG dịch "được giúp đỡ").
+  + Khử danh hóa và từ đệm hành chính thừa thãi: Tránh các từ ("việc", "sự", "chuyện là", "thực tế rằng") trong câu thoại:
+    * 現実を受け入れる → "chấp nhận sự thật" (tự nhiên hơn "chấp nhận thực tế").
+    * 〜ということ → dịch thẳng hành động, không đệm "việc...".
+  + Khẩu ngữ đối thoại tự nhiên: Sử dụng linh hoạt trợ từ tình thái và thán từ tiếng Việt (nhé, nha, đấy, mà, cơ, à, hả...) phù hợp tâm lý và bối cảnh phim.
+  + ĐỘC LẬP TỪNG DÒNG: Mỗi dòng phụ đề là độc lập. TUYỆT ĐỐI KHÔNG lặp lại bản dịch của câu trước cho câu sau khi câu tiếng Nhật khác nhau. Không để thông tin câu dưới rò rỉ lên câu trên.
 """
 
 # Uncen system prompt — thêm vào base cho mode uncen
-# Bắt buộc dịch trung thực 100% từ ngữ tình dục, KHÔNG làm sạch/làm mượt
+# Bắt buộc dịch trung thực 100% từ ngữ tình dục theo khẩu ngữ đời thực (Mức 2)
 _UNCEN_ADDON = """
 
-UNCEN MODE (BẮT BUỘC — dịch phim người lớn/JAV):
-- Dịch TRUNG THỰC 100% mọi từ ngữ tình dục, KHÔNG làm sạch, KHÔNG né tránh, KHÔNG dùng từ Hán Việt lịch sự.
-- "気持ちいい" → "Sướng quá" (KHÔNG "Dễ chịu" / "Thoải mái").
+UNCEN MODE (BẮT BUỘC — dịch phim người lớn/JAV theo khẩu ngữ tự nhiên, chân thực):
+- Dịch TRUNG THỰC 100% mọi từ ngữ tình dục bằng KHẨU NGỮ ĐỜI THỰC, KHÔNG làm sạch, KHÔNG né tránh, KHÔNG dùng từ Hán Việt lịch sự hay y khoa cứng nhắc.
+- "気持ちいい" → "Sướng quá" / "Phê quá" (KHÔNG "Dễ chịu" / "Thoải mái").
 - "いく" / "逝く" → "ra" / "sắp ra" (KHÔNG "lên đỉnh" mềm mại).
-- "セックス" → "quan hệ tình dục" (KHÔNG "gần gũi" / "yêu").
-- "中出し" → "xuất tinh trong" (KHÔNG giảm nhẹ).
+- "セックス" → "làm tình" / "chịch" (KHÔNG dùng từ y khoa "quan hệ tình dục", KHÔNG "gần gũi" / "yêu").
+- "中出し" → "bắn vào trong" / "xuất vào trong" (KHÔNG "xuất tinh trong" cứng nhắc).
+- "ちんぽ" / "ちんちん" / "ちんこ" / "肉棒" → "con cặc" / "cặc" / "cu" (KHÔNG "cậu nhỏ", tránh dùng từ y khoa "dương vật" trong câu thoại giao tiếp).
+- "まんこ" / "おまんこ" → "bướm" / "lồn" (KHÔNG dịch y khoa "âm đạo", KHÔNG "cô bé").
+- "フェラ" / "フェラチオ" → "bú cu" / "bú cặc" (KHÔNG dịch y khoa "hút dương vật" hay "ngậm").
+- "パイズリ" → "kẹp ngực" / "kẹp vú" (KHÔNG "kẹp dương vật bằng ngực").
+- "手コキ" → "sóc lọ" / "dùng tay sục cặc" (KHÔNG "kích thích dương vật bằng tay").
+- "クンニ" → "liếm bướm" (KHÔNG "liếm âm đạo").
 - "孕む" / "妊娠" → "mang thai" / "có thai" (KHÔNG "có em bé" né tránh).
 - "犯す" → "cưỡng ép" / "hiếp" tùy ngữ cảnh (KHÔNG che đậy).
-- "やめて" trong ngữ cảnh tình dục → "dừng lại" / "thôi" tùy giọng (KHÔNG bỏ).
-- Particles rên rỉ (あっ/んっ/はぁ/きゃっ) → giữ nguyên "anh"/"ừ"/"hừm" theo âm thanh gốc.
+- "やめて" trong ngữ cảnh tình dục → "dừng lại" / "thôi mà" / "đừng mà" tùy giọng (KHÔNG bỏ).
+- Particles rên rỉ (あっ/んっ/はぁ/きゃっ) → giữ nguyên "anh"/"ừ"/"hừm"/"a...".
 - GLOSSARY (glossary tình dục) là LUẬT, KHÔNG được thay bằng từ Hán Việt lịch sự.
 - Tiếng rên/rên rỉ → giữ nguyên tiếng Việt tương đương, KHÔNG bỏ.
 - 喘ぐ/喘ぎ → "rên rỉ"/"rên" (KHÔNG "thở").
-- 射精 → "xuất tinh" (KHÔNG "phóng thích").
+- 射精 → "bắn tinh" / "xuất tinh" (KHÔNG "phóng thích").
 - 勃起 → "cương cứng" (KHÔNG "hưng phấn").
+- NEO GIỚI TÍNH SINH HỌC (TUYỆT ĐỐI KHÔNG ĐẢO NGƯỢC NAM/NỮ):
+  + "まんこ" / "おまんこ" (bướm/lồn), "おっぱい" (ngực/vú), "子宮" (tử cung) là cơ thể NỮ → luôn đi với đại từ nữ ("của em/cô/chị/mẹ", TUYỆT ĐỐI KHÔNG dịch là "bướm của anh" hay "ngực anh").
+  + "ちんぽ" / "ちんちん" / "肉棒" (con cặc/cu), "中出しした/しちゃいました" (đã bắn vào trong) là cơ thể/hành động của NAM → khi nam nói với nữ ("ずっとちんぽ見てますね"), phải dịch là "cô/em cứ nhìn con cặc của tôi suốt nhỉ" (KHÔNG dịch thành "tớ nhìn con cặc của anh").
 - ĐỪNG giảm sắc thái ngay cả khi câu nghe thô — đó là phong cách phim.
 """
 
@@ -114,10 +138,14 @@ Bản dịch "thô" (ROUGH) cần được trau chuốt cho tự nhiên, nhất 
 
 ƯU TIÊN TRAU CHUỐT:
 1. Nhất quán xưng hô xuyên suốt (dựa trên danh sách các dạng keigo đã thấy ở bước literal).
-2. Câu thoại nghe như người Việt nói, không "dịch máy".
+2. Câu thoại nghe như người Việt nói, KHÔNG "dịch máy" (De-translationese):
+   - Chuyển câu bị động gượng sang chủ động tự nhiên (vd: "muốn anh làm thô bạo", KHÔNG "muốn bị cưỡng ép").
+   - Bỏ các từ đệm hành chính ("việc", "sự", "thực tế rằng").
+   - Thêm trợ từ khẩu ngữ tự nhiên (nhé, nha, đấy, mà, cơ, à, hả...).
 3. Giữ đúng sắc thái cảm xúc (ngạc nhiên, giận, mỉa mai...).
 4. Nếu ROUGH còn sót romaji/kana onomatopoeia, dịch lại sang tiếng Việt.
 5. Khi gặp tên riêng, dùng canonical trong TEN RIENG (không tự sáng tạo).
+6. ĐỘC LẬP TỪNG DÒNG: Mỗi dòng phụ đề chỉ dịch đúng phần nghĩa của câu gốc đó.
 {context_block}
 QUY TẮC ĐẦU RA:
 - Trả về JSON array hợp lệ, không kèm text ngoài JSON.
@@ -128,6 +156,8 @@ TUYỆT ĐỐI KHÔNG:
 - Bỏ sót hoặc gộp nhiều dòng thành một.
 - Trả về câu gốc khi chưa dịch.
 - Tự sáng tạo tên riêng (vd: 匠 KHÔNG phải "Craft", あゆみ KHÔNG phải "Aya").
+- Sao chép lặp lại bản dịch của dòng trước cho dòng sau khi hai câu gốc tiếng Nhật khác nhau.
+- Mang ý tứ hay từ ngữ của dòng dưới lên dòng trên (chống lây nhiễm ngữ cảnh).
 {glossary_block}
 {character_block}
 Dữ liệu (ORIGINAL là câu gốc, ROUGH là bản dịch thô):
@@ -145,8 +175,10 @@ Vẫn phải giữ đúng NGHĨA gốc, chỉ sửa lỗi diễn đạt/sắc th
 {context_block}
 QUY TẮC:
 - Dịch lại câu ORIGINAL cho tự nhiên, dùng ROUGH làm gợi ý.
+- Khử mùi dịch máy: câu bị động chuyển sang chủ động tự nhiên, thêm thán từ/trợ từ khẩu ngữ (nhé, đấy, mà, hả...).
 - Giữ đúng xưng hô và cách gọi nhau nhất quán trong cả danh sách.
 - Giữ nguyên nghĩa tình dục/thô như gốc (không làm sạch, không né tránh).
+- Độc lập từng dòng: tuyệt đối không lặp lại bản dịch của dòng trước cho dòng sau khi câu gốc khác nhau.
 {glossary_block}
 {character_block}
 OUTPUT FORMAT (BẮT BUỘC):
@@ -167,16 +199,16 @@ Bạn là reviewer. So sánh từng cặp (ORIGINAL gốc tiếng Nhật, TRANSL
 Nhiệm vụ: phát hiện "translation drift" — bản dịch lệch nghĩa, bỏ sót thông tin, hoặc còn sót romaji/kana.
 {context_block}
 QUY TẮC:
-- Trả về JSON array, mỗi phần tử:
-  {{"id": <1-based>, "ok": true|false, "issue": "<mô tả ngắn nếu ok=false>", "suggestion": "<bản dịch đề xuất nếu ok=false>"}}
-- ok=true nếu bản dịch đúng nghĩa, tự nhiên, không có romaji/kana sót.
+- Trả về JSON array. CHỈ liệt kê những dòng CÓ LỖI (ok=false), mỗi phần tử:
+  {{"id": <1-based>, "ok": false, "issue": "<tối đa 8 từ>", "suggestion": "<bản dịch đề xuất>"}}
+- Nếu tất cả các dòng đều đúng nghĩa, tự nhiên, đúng xưng hô và không sót chữ Nhật/romaji, trả về mảng rỗng: []
 - ok=false nếu lệch nghĩa, bỏ sót particle, còn romaji/kana onomatopoeia, hoặc quá máy móc.
 - Nếu xưng hô trong TRANSLATION không khớp với bản đồ pronouns_map ở context, đánh ok=false.
 - Nếu tên riêng trong TRANSLATION không khớp TEN RIENG (vd: 匠 = Takumi, あゆみ = Ayumi), đánh ok=false.
 
 TUYỆT ĐỐI KHÔNG:
-- Bỏ sót dòng nào trong danh sách.
-- Trả về text ngoài JSON.
+- Liệt kê các dòng đã đúng (ok=true).
+- Viết giải thích dài dòng hoặc trả về text ngoài JSON.
 {glossary_block}
 {character_block}
 Danh sách cần review:
@@ -319,8 +351,8 @@ Output: 1. Xin chào
 Input: ありがとうございます
 Output: 1. Cảm ơn rất nhiều
 
-Keigo: です/ます → "anh/chị"; だ/する → "tớ/cậu".
-Family: 兄さん/お兄さん/お兄ちゃん=anh, 姉さん/お姉さん=chị (KHÔNG dịch thành "cậu").
+Pronouns: Default "tôi - anh/chị/em/cô". NEVER use "tớ/cậu" for adults or parents (お母さん/娘).
+Family: お母さん=mẹ/cô, 娘=con gái (not "cô ấy"), 兄さん/お兄さん=anh, 姉さん/お姉さん=chị (KHÔNG dịch thành "cậu").
 Particles: ね=nhỉ, よ=nhấn mạnh, わ=sự ngạc nhiên, ぞ=cảnh báo.
 Onomatopoeia: きらきら→lấp lánh, わくわく→hào hứng, ドキドキ→đập thình thịch.
 Common mistakes to avoid: 勉強=học (not "cố gắng"), 汽車=xe lửa, 階段=cầu thang."""
@@ -340,21 +372,22 @@ ABSOLUTE RULES (never break):
 1. Vietnamese translation
 2. Vietnamese translation
 
-UNCEN MODE (adult content — translate literally, do NOT sanitize):
+UNCEN MODE (adult content — translate literally with natural explicit spoken tone, do NOT sanitize):
 - Use explicit Vietnamese words for sexual content. NEVER substitute polite/soft
   euphemisms: no "bạn tình" (use "người tình"), no "quan hệ" alone for sex
-  (use "quan hệ tình dục"), no "gần gũi" (use "quan hệ tình dục"),
+  (use "làm tình"), no "gần gũi" (use "làm tình"),
   no "dễ chịu"/"thoải mái" (use "sướng"), no "lên đỉnh" (use "ra"),
-  no "phóng thích" (use "xuất tinh"), no "cương" alone (use "cương cứng"),
-  no "mở miệng" for oral (use "hút dương vật").
-- 気持ちいい→sướng quá, いく→ra, セックス→quan hệ tình dục, 中出し→xuất tinh trong,
-  孕む/妊娠→mang thai, 犯す→cưỡng ép/hiếp, 喘ぐ→rên rỉ, 射精→xuất tinh,
-  勃起→cương cứng, 挿入→chèn vào, フェラ→hút dương vật.
+  no "phóng thích" (use "bắn tinh"/"xuất tinh"), no "cương" alone (use "cương cứng"),
+  no "mở miệng" for oral (use "bú cu"/"bú cặc"), no "cậu nhỏ" (use "con cặc"/"cu").
+- 気持ちいい→sướng quá, いく→ra, セックス→làm tình/chịch, 中出し→bắn vào trong,
+  孕む/妊娠→mang thai, 犯す→cưỡng ép/hiếp, 喘ぐ→rên rỉ, 射精→bắn tinh/xuất tinh,
+  勃起→cương cứng, 挿入→đút vào/cho vào, フェラ→bú cu/bú cặc, まんこ→bướm/lồn, ちんぽ→con cặc/cu.
 - Keep rough/直接的 tone of original dialogue. Do not add politeness or euphemism.
 - MANDATORY GLOSSARY entries below are ABSOLUTE RULES — use the exact target word.
 
-Keigo: です/ます → "anh/chị"; だ/する → "tớ/cậu".
-Family: 兄さん/お兄さん/お兄ちゃん=anh, 姉さん/お姉さん=chị (KHÔNG dịch thành "cậu").
+Pronouns & Gender Lock: Default "tôi - anh/chị/em/cô". NEVER use "tớ/cậu" for adults, parents (お母さん/娘), or 18+ scenes.
+Anatomical Gender: まんこ/おっぱい = female body ("của em/cô/mẹ", NEVER "của anh"); ちんぽ/中出し = male body/action.
+Family: お母さん=mẹ/cô, 娘=con gái (not "cô ấy"), 兄さん/お兄さん=anh, 姉さん/お姉さん=chị (KHÔNG dịch thành "cậu").
 Particles: ね=nhỉ, よ=nhấn mạnh, わ=sự ngạc nhiên, ぞ=cảnh báo.
 Onomatopoeia: きらきら→lấp lánh, わくわく→hào hứng, ドキドキ→đập thình thịch."""
 
@@ -390,7 +423,12 @@ def _format_pairs(source_lines: List[str], translations: List[str]) -> str:
     )
 
 
-_LEADING_NUM_RE = re.compile(r"^\s*\d+[\.\)]\s*")
+# CHỈ strip dạng numbered-list thật ("1. ", "2) ", "1、"):
+# - 1-3 chữ số + [.)] + BẮT BUỘC khoảng trắng, hoặc "N、"
+# - KHÔNG đưa ':' và '-' vào class vì sẽ cắt số giờ ("3:00") / khoảng ("20-30 tuổi",
+#   "1-2 tiếng") trong câu tiếng Việt hợp lệ (bug review 2026-11-01).
+_LEADING_NUM_RE = re.compile(r"^(?:\d{1,3}\s*[\.\)]\s+|\d{1,3}、\s*)+")
+_LEADING_ORPHAN_PUNCT_RE = re.compile(r"^[,;:\s]+")
 
 
 def _is_likely_japanese_translation(text: str) -> bool:
@@ -432,7 +470,12 @@ _JUNK_TAIL_RE = re.compile(r"(?:[\u4e00-\u9fff]|too|도|に){1,4}$", re.IGNORECA
 
 
 def _strip_leading_number(line: str) -> str:
-    return _LEADING_NUM_RE.sub("", line).strip()
+    res = _LEADING_NUM_RE.sub("", line or "").strip()
+    if _LEADING_ORPHAN_PUNCT_RE.match(res):
+        res = _LEADING_ORPHAN_PUNCT_RE.sub("", res).strip()
+        if res and res[0].islower():
+            res = res[0].upper() + res[1:]
+    return res
 
 
 # Model hay trả kèm chú thích tự nói với mình ("(Giữ nguyên nếu ngữ cảnh phù hợp...)",
@@ -463,6 +506,42 @@ def looks_like_llm_junk(text: str, reference: str = "") -> bool:
     return t[0] in _OPEN_QUOTES and not (reference or "").strip().startswith(tuple(_OPEN_QUOTES))
 
 
+def _looks_shifted(sug: str, lines: List[str], idx: int,
+                   threshold: float = 0.78) -> bool:
+    """True nếu `sug` thực chất là bản dịch của DÒNG KỀ BÊN, không phải dòng `idx`.
+
+    Lỗi thực đo được trên NSFS-504 và NSFS-301: QA trả danh sách suggestion có `id` đúng
+    nhưng nội dung lệch 1 dòng; áp vào thì cả window bị đẩy lệch và dòng đầu
+    bị nhân bản (đúng dấu hiệu `DUP_TRANSLATION line k->k+1`).
+
+    Vì `lines[idx-1]` hoặc `lines[idx+1]` đã mang nội dung của câu đó, suggestion lệch sẽ
+    gần trùng với nó (ngưỡng 0.78 bắt được cả trường hợp đổi từ ở đuôi câu).
+    """
+    if not sug:
+        return False
+    for nb in (idx - 1, idx + 1):
+        if not (0 <= nb < len(lines)):
+            continue
+        other = (lines[nb] or "").strip()
+        if not other:
+            continue
+        # Trùng khít với dòng kề bên là tín hiệu MẠNH NHẤT của lệch index
+        if other == sug:
+            return True
+        ratio = difflib.SequenceMatcher(None, sug, other).ratio()
+        if ratio >= threshold:
+            return True
+        # Nếu có tiền tố chung dài >= 12 ký tự và ratio >= 0.72 -> cùng 1 ý
+        prefix_len = 0
+        for c1, c2 in zip(sug, other):
+            if c1 != c2:
+                break
+            prefix_len += 1
+        if prefix_len >= 12 and ratio >= 0.72:
+            return True
+    return False
+
+
 def _clean_markdown(line: str) -> str:
     r"""Strip markdown bold, leading arrows, giữ text thuần. Áp dụng cho mọi
     LLM output trước khi xuất ra SRT — tránh bug **xxx**, → xxx leak.
@@ -482,6 +561,7 @@ def _clean_markdown(line: str) -> str:
             cleaned = cleaned.rsplit(sep, 1)[1].strip()
     cleaned = _THAI_RE.sub("", cleaned)
     cleaned = _JUNK_TAIL_RE.sub("", cleaned)
+    cleaned = _strip_leading_number(cleaned)
     return cleaned.strip()
 
 
@@ -503,7 +583,7 @@ def _map_numbered(out_lines: List[str], n: int) -> List[Optional[str]]:
             continue
         found = True
         k = int(m.group(1)) - 1
-        text = m.group(2).strip()
+        text = _strip_leading_number(m.group(2).strip())
         if 0 <= k < n and slots[k] is None and text:
             slots[k] = text
     if not found:
@@ -607,9 +687,9 @@ class JaTranslator:
                     for idx, item in enumerate(items):
                         if isinstance(item, dict):
                             text = item.get("text") or item.get("translation") or item.get("vietnamese") or ""
-                            out_lines.append(f"{idx + 1}. {text}")
+                            out_lines.append(f"{idx + 1}. {_strip_leading_number(str(text))}")
                         else:
-                            out_lines.append(f"{idx + 1}. {str(item)}")
+                            out_lines.append(f"{idx + 1}. {_strip_leading_number(str(item))}")
                     raw = "\n".join(out_lines)
                 else:
                     logger.warning("literal_translate: JSON parse failed, falling back to plain text")
@@ -748,8 +828,12 @@ class JaTranslator:
             try:
                 raw2 = self.translator.generate(prompt, temperature=0.0)
                 parsed = self._safe_extract_json(raw2)
-            except Exception:
-                pass
+            except Exception as e:
+                # Audit R-1: giữ nguyên fallback nhưng không nuốt im lặng.
+                logger.debug(
+                    f"JaTranslator.polish_translate: retry generate failed "
+                    f"({type(e).__name__}: {e})"
+                )
         if not isinstance(parsed, list):
             logger.warning("JaTranslator.polish_translate: no JSON list, keeping rough")
             return self._polish_fallback(source_lines, rough_translations,
@@ -816,27 +900,27 @@ class JaTranslator:
             logger.warning(f"JaTranslator.polish fallback generate failed: {e}, keeping rough")
             return rough_translations
 
-        parsed: list = []
-        for line in raw.strip().split("\n"):
-            m = numbered_re.match(line)
-            if m:
-                parsed.append(_clean_markdown(m.group(2).strip()))
-
-        if len(parsed) < n:
+        raw_lines = [line.strip() for line in raw.strip().split("\n") if line.strip()]
+        numbered_lines = [line for line in raw_lines if numbered_re.match(line)]
+        if len(numbered_lines) < max(2, n - 1) and len(numbered_lines) < n:
             logger.warning(
-                f"JaTranslator.polish fallback: got {len(parsed)}/{n} lines, keeping rough"
+                f"JaTranslator.polish fallback: got {len(numbered_lines)}/{n} lines, keeping rough"
             )
             return rough_translations
 
-        # Giữ rough cho dòng mà fallback trả rỗng/echo tiếng Nhật
+        slots = _map_numbered(raw_lines, n)
+
+        # Giữ rough cho dòng bị thiếu (None) hoặc dòng mà fallback trả rỗng/echo tiếng Nhật
         out_vn: List[str] = []
+        polished_count = 0
         for j in range(n):
-            cand = parsed[j]
+            cand = _clean_markdown(slots[j].strip()) if slots[j] else ""
             if not cand or _is_likely_japanese_translation(cand):
                 out_vn.append(rough_translations[j])
             else:
                 out_vn.append(cand)
-        logger.info(f"JaTranslator.polish fallback OK ({n} lines via numbered list)")
+                polished_count += 1
+        logger.info(f"JaTranslator.polish fallback OK ({polished_count}/{n} lines via numbered list)")
         return out_vn
 
     # --- Pass 3 ---
@@ -906,36 +990,73 @@ class JaTranslator:
         translations: List[str],
         qa_results: List[dict],
     ) -> List[str]:
-        """Áp suggestion từ QA pass vào list translations (in place, return new list).
+        """Áp suggestion từ QA pass vào list translations (return list mới).
 
-        P1-2 fix: QA prompt schema now uses 'id' (consistent with polish schema) instead
-        of 'index'. Read 'id' to align with polish_translate. Fall back to 'index' for
-        backwards compatibility with older LLM outputs.
+        Mỗi dòng được quyết định ĐỘC LẬP. Trước đây hàm bỏ qua toàn bộ QA khi
+        >50% dòng bị flag, khiến các suggestion hợp lệ của thiểu số cũng bị vứt
+        (audit C-1: 500/758 = 66% tổng số flag bị mất trên log production).
+
+        Schema đầu vào: `qa_review()` phát key "index"; một số output LLM cũ dùng
+        "id". Đọc cả hai để tương thích.
         """
         if not qa_results:
             return translations
+
         out = list(translations)
-        # shortcut: window >= 4 dòng mà QA chê quá nửa → coi reviewer là nhiễu (ADN-627: 6/6 dòng,
-        # toàn rác), giữ bản polish. Hạ ngưỡng nếu thấy QA đúng ở các window dịch tệ thật.
         flagged = sum(1 for it in qa_results if not it.get("ok", True))
+
+        # Tỉ lệ flag cao là tín hiệu ĐỂ SỬA, không phải để bỏ qua — chỉ cảnh báo.
         if len(out) >= 4 and flagged > len(out) / 2:
-            logger.warning(f"JaTranslator.apply_qa_results: {flagged}/{len(out)} flagged, ignoring QA for window")
-            return out
+            logger.warning(
+                f"JaTranslator.apply_qa_results: high flag ratio {flagged}/{len(out)} "
+                f"— applying per-line fixes anyway"
+            )
+
+        applied = 0
+        dropped_junk = 0
+        dropped_shift = 0
         for item in qa_results:
             if item.get("ok", True):
                 continue
-            # P1-2: prefer 'id' (consistent with polish), fall back to 'index' for old data
             raw_id = item.get("id")
             if raw_id is None:
                 raw_id = item.get("index", 0)
-            idx = raw_id - 1
-            sug = _clean_markdown(item.get("suggestion", "").strip())
-            if not (0 <= idx < len(out)) or not sug:
+            try:
+                idx = int(raw_id) - 1
+            except (TypeError, ValueError):
+                continue
+            if not (0 <= idx < len(out)):
+                continue
+            sug = _clean_markdown(str(item.get("suggestion", "")).strip())
+            if not sug:
                 continue
             if looks_like_llm_junk(sug, out[idx]):
-                logger.warning(f"JaTranslator.apply_qa_results: dropped junk suggestion for line {idx + 1}: {sug[:50]!r}")
+                logger.warning(
+                    f"JaTranslator.apply_qa_results: dropped junk suggestion "
+                    f"for line {idx + 1}: {sug[:50]!r}"
+                )
+                dropped_junk += 1
                 continue
-            out[idx] = sug
+            # Chống lệch index: LLM đôi khi trả suggestion của DÒNG BÊN CẠNH
+            # (id đúng nhưng nội dung lệch 1). Áp nguyên xi sẽ đẩy cả window lệch
+            # một dòng và nhân bản dòng đầu — đúng lỗi DUP_TRANSLATION mà
+            # pipeline cảnh báo. Nếu suggestion gần trùng bản dịch của dòng
+            # kề bên thì đó là dấu hiệu lệch -> bỏ, giữ bản polish.
+            if _looks_shifted(sug, out, idx):
+                logger.warning(
+                    f"JaTranslator.apply_qa_results: dropped SHIFTED suggestion "
+                    f"for line {idx + 1} (matches neighbour): {sug[:50]!r}"
+                )
+                dropped_shift += 1
+                continue
+            if out[idx] != sug:
+                out[idx] = sug
+                applied += 1
+
+        logger.info(
+            f"JaTranslator.apply_qa_results: applied={applied} junk={dropped_junk} "
+            f"shifted={dropped_shift} flagged={flagged}/{len(out)}"
+        )
         return out
 
     # --- helpers ---

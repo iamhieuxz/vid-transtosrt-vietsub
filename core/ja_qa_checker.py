@@ -67,6 +67,8 @@ _NON_NAME_HONORIFIC_STEMS: Set[str] = {
     '手伝い', 'お手伝い', 'てつだい', 'モデル', '近所', 'ご近所', 'きんじょ',
     'ちん', 'チン', 'チンチン', 'かちん', 'おにい', 'おねえ', 'アジア', '黒',
     '馬鹿', 'バカ', 'ばか', '阿呆', 'アホ', 'あほ', '変態', 'エロ', 'スケベ',
+    '女王', '王様', '王', '王子', '姫', 'お姫', '誰か', 'だれか',
+    '皆様', '皆さま', '皆さん', '神様', '仏様', 'お客様', 'お客さま',
 }
 
 # Các từ Katakana vay mượn phổ biến đôi khi UniDic gán nhầm là 人名
@@ -183,25 +185,30 @@ def ja_to_hepburn(text: str) -> str:
 
 
 def _generate_mistaken_aliases(canonical: str) -> List[str]:
-    """Sinh các biến thể tên mà Whisper/LLM 8B hay phiên âm lệch."""
+    """Sinh các biến thể tên mà Whisper/LLM 8B hay phiên âm lệch.
+    Không sinh các tiền tố/chuỗi con ngắn (< 4 ký tự) của tên gốc để tránh khớp nhầm.
+    """
     c = canonical.strip()
     if len(c) < 3:
         return []
     out: Set[str] = set()
     low = c.lower()
-    # Lỗi gấp đôi phụ âm hoặc nuốt âm (vd: Miku -> Mikku, Mikuru, Mik, Mikusama; Tsuyoshi -> Tuyoshi, Tsuyashi)
     if low == 'miku':
-        out.update(['Mikuru', 'Mikku', 'Mikusama', 'Mik'])
+        out.update(['Mikuru', 'Mikku', 'Mikusama'])
     elif low == 'tsuyoshi':
-        out.update(['Tuyoshi', 'Tsuyashi'])
+        out.update(['Tuyoshi', 'Tsuyashi', 'Tsuyoi', 'Tsuyuhi', 'Tsuyuki'])
     if 'ts' in low:
-        out.add(low.replace('ts', 't').capitalize())
+        cand = low.replace('ts', 't').capitalize()
+        if len(cand) >= 4:
+            out.add(cand)
     if 'sh' in low:
-        out.add(low.replace('sh', 's').capitalize())
+        cand = low.replace('sh', 's').capitalize()
+        if len(cand) >= 4:
+            out.add(cand)
     for suf in ('san', 'chan', 'kun', 'sama'):
         out.add((low + suf).capitalize())
     out.discard(c)
-    return sorted(out)
+    return sorted(a for a in out if len(a) >= 4)
 
 
 def extract_character_names_from_lines(
@@ -270,6 +277,19 @@ def extract_character_names_from_lines(
                             continue
                         if surf in {'せっ', 'ちょ', 'うど'}:
                             continue
+                        # Nếu surf là hiragana thuần và đứng ngay sau 1 ký tự hiragana KHÔNG phải trợ từ
+                        # (VD: 'つ' + 'ゆき' + 'くん' do Whisper nghe lệch 'つよし'), ghép lại thành 'つゆき'
+                        if idx > 0 and re.match(r'^[ぁ-ん]{2,3}$', surf):
+                            prev_tok = toks[idx - 1]
+                            prev_s = prev_tok.surface.strip()
+                            prev_pos1 = getattr(prev_tok.feature, 'pos1', '') or ''
+                            if (
+                                len(prev_s) == 1
+                                and re.match(r'^[ぁ-ん]$', prev_s)
+                                and prev_pos1 not in ('助詞', '助動詞', '補助記号')
+                                and prev_s not in ('お', 'ご')
+                            ):
+                                surf = prev_s + surf
                         jinmei_hits[surf] += 1
                         surface_score[surf] += 4 if has_honorific else 2
                         if has_honorific:
@@ -323,10 +343,42 @@ def extract_character_names_from_lines(
             continue
         surface_to_canonical[surf] = romaji
         by_canonical[romaji].add(surf)
-        for hon in ('さん', 'ちゃん', 'くん', '様'):
+        for hon in ('さん', 'ちゃん', 'くん', '君', '様'):
             by_canonical[romaji].add(f"{surf}{hon}")
         by_canonical[romaji].add(romaji)
         canonical_score[romaji] += surface_score[surf]
+
+    # Phonetic Name Clustering (Q-P2.1): gom các biến thể tên nghe nhầm gần âm
+    # (VD: Tsuyoshi <-> Tsuyoi / Tsuyuhi khi đi kèm hậu tố さん/君 trong cùng bộ phim)
+    try:
+        from rapidfuzz import fuzz as _rf_fuzz
+        ranked_cans = sorted(by_canonical.keys(), key=lambda k: (-canonical_score[k], -len(k)))
+        absorbed: Set[str] = set()
+        extra_mistaken: Dict[str, Set[str]] = defaultdict(set)
+        for i, main_can in enumerate(ranked_cans):
+            if main_can in absorbed or len(main_can) < 4:
+                continue
+            for other_can in ranked_cans[i + 1:]:
+                if other_can in absorbed or len(other_can) < 4:
+                    continue
+                # Chỉ gộp khi tên phụ XUẤT HIỆN HIẾM (≤ 1/3 tần suất tên chính).
+                # Hai nhân vật thật với tên gần âm (Yuki/Yukio, Haruka/Haruko, Mika/Mikako)
+                # có tần suất tương đương -> KHÔNG gộp (bug review 2026-11-01).
+                if canonical_score[other_can] * 3 > canonical_score[main_can]:
+                    continue
+                if main_can[0].lower() == other_can[0].lower() and (
+                    _rf_fuzz.ratio(main_can.lower(), other_can.lower()) >= 75.0
+                    or (len(main_can) >= 6 and len(other_can) >= 6 and main_can[:4].lower() == other_can[:4].lower())
+                ):
+                    by_canonical[main_can].update(by_canonical[other_can])
+                    canonical_score[main_can] += canonical_score[other_can]
+                    extra_mistaken[main_can].add(other_can)
+                    absorbed.add(other_can)
+        for gone in absorbed:
+            by_canonical.pop(gone, None)
+            canonical_score.pop(gone, None)
+    except Exception:
+        extra_mistaken = defaultdict(set)
 
     # Hợp nhất với existing_names từ config (config luôn được ưu tiên giữ nguyên)
     merged_map: Dict[str, dict] = {}
@@ -355,7 +407,7 @@ def extract_character_names_from_lines(
             key=len,
         )
         ordered_aliases = ja_raw + ja_with_hon + [can]
-        mistaken = _generate_mistaken_aliases(can)
+        mistaken = sorted(set(_generate_mistaken_aliases(can)) | extra_mistaken.get(can, set()))
 
         if key in merged_map:
             cur_aliases = merged_map[key]['aliases']
@@ -387,18 +439,21 @@ _JA_NEGATION_RE = re.compile(
     r'ないでください|ないでくれ|ない$|ない。|ない！|ない!|ない…)'
 )
 
-# Các mẫu câu tiếng Nhật có chứa 'ない'/'ません' nhưng thực chất là lời xin lỗi, rủ rê, hỏi đuôi, hoặc khẳng định
+# Các mẫu câu tiếng Nhật có chứa 'ない'/'ません' nhưng thực chất là lời xin lỗi, rủ rê, hỏi đuôi, hoặc khẳng định.
+# Audit C-2: KHÔNG đưa động từ thường vào đây. Trước đây danh sách còn chứa
+# 出かけない / 行かない$ / 飲まない$ / 食べない$ / しない$ / 見ない$ / 遊ばない$ — đây là
+# phủ định THẬT của động từ rất phổ biến trong phụ đề, khiến lỗi "食べない" -> "ăn"
+# không bao giờ bị phát hiện. Chỉ giữ idiom / mẫu ngữ pháp mang nghĩa khẳng định.
 _JA_PSEUDO_NEGATION_RE = re.compile(
     r'(すみません|すいません|ごめんなさい|申し訳ありません|申し訳ございません|'
     r'じゃないですか|じゃないか|じゃないかな|じゃないの|じゃない[？?]|ちゃうじゃない|てしまうじゃない|じゃない$|'
     r'のではないですか|のではないでしょうか|ではないですか|ではないでしょうか|んじゃありません|んではありません|'
-    r'んじゃない|んじゃなかった|かもしれない|かもしれません|かも知れない|'
+    r'んじゃない|んじゃなかった|かもしれない|かも知れない|'
     r'しか[^。！？!?]*ない|しか[^。！？!?]*ません|'
     r'なければなら|なければなり|なければいけ|なくてはいけ|なくてはなり|なきゃ|ないと|なくては|'
     r'ざるを得ない|ざるを得なかった|'
     r'っぱなし|仕様がない|しょうがない|しょうがありません|仕方ない|しかたない|仕方がありません|仕方ありません|'
-    r'間違いない|まちがいない|違いない|ちがいない|たまらない|やむを得ない|なかなかいない|'
-    r'出かけない|行かない[？?]?$|飲まない[？?]?$|食べない[？?]?$|しない[？?]?$|見ない[？?]?$|遊ばない[？?]?$)'
+    r'間違いない|まちがいない|違いない|ちがいない|たまらない|やむを得ない|なかなかいない)'
 )
 
 # Các từ phủ định tiếng Việt tương ứng
@@ -410,6 +465,12 @@ _VI_NEGATION_RE = re.compile(
 
 _CJK_CHAR_RE = re.compile(r'[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]+')
 _VI_LATIN_RE = re.compile(r'[a-zA-ZàáảãạăâêôơưđÀÁẢÃẠĂÂÊÔƠƯĐ]')
+
+# --- P3: ngưỡng phát hiện mất vế câu (đo trên 2 640 cặp thật trong translation.db) ---
+# Tiếng Việt dài hơn tiếng Nhật ~2.5 lần (median 2.54, p05 1.42, p01 0.94).
+_MIN_JA_LEN_FOR_RATIO = 12   # câu ngắn hơn thì tỷ lệ nhiễu, không đáng flag
+_MIN_VI_JA_RATIO = 0.90      # dưới p01 -> gần như chắc chắn mất vế
+_REPEATED_TOKEN_RE = re.compile(r'^(\S{1,6})(\s*\1){2,}')  # "うん うん うん" -> nén hợp lý
 
 # Từ điển dịch nhanh các mảnh chữ Hán/Nhật hay bị sót trong câu tiếng Việt (dùng chung từ post_processor)
 from .post_processor import COMMON_CJK_LEAK_MAP as _COMMON_RESIDUAL_CJK_MAP
@@ -540,13 +601,34 @@ class JaQAChecker:
     # --------------------------------------------------------- 4. Độ dài
     @staticmethod
     def check_length_anomaly(ja_text: str, vi_text: str) -> Optional[str]:
-        """Kiểm tra tỷ lệ độ dài JA/VI bất thường (mất vế câu hoặc lặp ảo giác)."""
+        """Kiểm tra tỷ lệ độ dài JA/VI bất thường (mất vế câu hoặc lặp ảo giác).
+
+        Audit P3: rule cũ chỉ flag khi `vi_len <= 3`, nên bỏ sót toàn bộ trường hợp
+        dịch mất vế câu (vd JA 38 ký tự 5 vế -> VI 31 ký tự 1 vế).
+
+        Ngưỡng dựa trên đo thực tế 2 640 cặp JA/VI trong translation.db:
+            median VI/JA = 2.54   p05 = 1.42   p01 = 0.94
+        Tiếng Việt vốn dài hơn tiếng Nhật ~2.5 lần, nên ratio < 0.90 (dưới p01)
+        là đuôi bất thường -> gần như chắc chắn mất vế.
+        """
         if not ja_text or not vi_text:
             return 'empty_translation' if ja_text and not (vi_text or '').strip() else None
-        ja_len = len(ja_text.strip())
-        vi_len = len(vi_text.strip())
+        ja = ja_text.strip()
+        vi = vi_text.strip()
+        ja_len = len(ja)
+        vi_len = len(vi)
+
+        # (a) Gần như rỗng: giữ nguyên rule cũ.
         if ja_len >= 12 and vi_len <= 3:
             return 'severe_truncation'
+
+        # (b) Quá ngắn so với câu gốc -> mất vế câu.
+        if ja_len >= _MIN_JA_LEN_FOR_RATIO and vi_len / ja_len < _MIN_VI_JA_RATIO:
+            # Ngoại lệ: câu gốc chỉ là MỘT từ lặp lại ("うん うん うん うん うん ん").
+            # Nén lặp lại thành "Ừ ừ ừ ừ ừ ừm" là hợp lý, không phải mất nội dung.
+            if not _REPEATED_TOKEN_RE.match(ja):
+                return 'severe_truncation'
+
         if vi_len > max(140, ja_len * 6):
             return 'hallucination_long'
         return None
@@ -628,8 +710,22 @@ class JaQAChecker:
             )
             if needs_retranslate and translator is not None and llm_budget > 0:
                 llm_budget -= 1
+                # P3: chỉ dẫn phải khớp với lỗi thật. Khi mất vế câu, phải yêu cầu
+                # dịch ĐỦ mọi vế — nếu không LLM lại cắt cụt y như lần trước.
+                hints = []
+                if 'severe_truncation' in info['issues']:
+                    hints.append(
+                        "the previous attempt dropped clauses — translate EVERY clause "
+                        "present in the Japanese, do not omit, summarise or shorten"
+                    )
+                if 'negation_mismatch' in info['issues']:
+                    hints.append(
+                        "keep the negative meaning with không/chưa/đừng"
+                    )
+                hint_text = ("; " + "; ".join(hints)) if hints else ""
                 prompt = (
-                    f"Translate this Japanese subtitle line into natural Vietnamese (keep negative meaning with không/chưa/đừng, output ONLY the Vietnamese translation, no explanation):\n"
+                    f"Translate this Japanese subtitle line into natural Vietnamese"
+                    f"{hint_text} (output ONLY the Vietnamese translation, no explanation):\n"
                     f"{ja}\n"
                     f"Vietnamese:"
                 )

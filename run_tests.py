@@ -531,7 +531,7 @@ def _(self):
 
         # Patch ja_translator (literal trả thiếu 1 dòng)
         class MockJaTranslator:
-            def literal_translate(self, source_lines, glossary_terms=None):
+            def literal_translate(self, source_lines, glossary_terms=None, **kwargs):
                 return ["Xin chào", "Tạm biệt"]  # chỉ 2 dòng cho 3 dòng input
             def polish_translate(self, src, rough, glossary_terms=None, context_summary=None):
                 return rough
@@ -555,7 +555,7 @@ def _(self):
 
         # Test case polish length mismatch — fallback về rough, fail-fast nếu rough cũng sai
         class MockJaTranslator2:
-            def literal_translate(self, source_lines, glossary_terms=None):
+            def literal_translate(self, source_lines, glossary_terms=None, **kwargs):
                 return ["Xin chào", "Tạm biệt", "Hẹn gặp lại"]
             def polish_translate(self, src, rough, glossary_terms=None, context_summary=None):
                 return ["polished1"]  # thiếu 2 dòng so với 3
@@ -787,7 +787,7 @@ def _(self):
 
         # Mock ja_translator (3-pass) - chạy đúng
         class MockJaTranslator:
-            def literal_translate(self, source_lines, glossary_terms=None):
+            def literal_translate(self, source_lines, glossary_terms=None, **kwargs):
                 return [f"literal_{i+1} noi dung {chr(97+i)}" for i in range(len(source_lines))]
             def polish_translate(self, source_lines, rough_translations,
                                  glossary_terms=None, context_summary=None):

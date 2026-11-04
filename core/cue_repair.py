@@ -73,6 +73,8 @@ def plan_project(db: Database, project_id: int) -> list:
     healed = _heal_split_tokens_across_cues([{'text': r['text']} for r in rows])
 
     pp = RuleBasedPostProcessor()
+    from .film_fixes import load_film_fixes
+    pp.set_film_fixes(load_film_fixes(name))
     plan = []
     for it, r, h in zip(items, rows, healed):
         new = {'original_text': _fix_homophones(h['text'])}
